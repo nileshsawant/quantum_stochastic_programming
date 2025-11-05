@@ -1,0 +1,2 @@
+# quantum_stochastic_programming
+Implementations of quantum computing algorithms for stochastic optimization
