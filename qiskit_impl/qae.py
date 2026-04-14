@@ -2,6 +2,31 @@
 created by csagal on 7/2/2024
 Script for running quantum optimization algorithms
 '''
+# =============================================================================
+# GPU PORTING STRATEGY  (branch: gpuOptim)
+# =============================================================================
+# This file is PURE CIRCUIT CONSTRUCTION -- it builds the canonical QAE circuit
+# but never calls a simulator itself.
+#
+# GPU impact here is INDIRECT: every QuantumCircuit assembled in
+# QAE_Optimizer.implemented_qae() is ultimately executed by the caller
+# (binary_optimizer.BinaryNestedOptimizer.execute_qae).  To gain GPU speedup:
+#
+#   TIER 1 (caller change, zero changes needed here):
+#     The caller must swap its Aer.get_backend('statevector_simulator') for
+#       AerSimulator(method='statevector', device='GPU')
+#     See binary_optimizer.py for the exact GPU-SWAP markers.
+#
+#   TIER 2 (transpile once, here or in caller):
+#     The QAE circuit built by implemented_qae() uses the same topology for
+#     every amplitude-estimation shot -- transpile it ONCE and cache it.
+#     GPU transpilation via Qiskit's target='GPU' mode further reduces overhead.
+#
+#   TIER 3 (cuStateVec):
+#     For >20 qubits the statevector grows exponentially.  Use
+#       AerSimulator(method='statevector', device='GPU', cuStateVec_enable=True)
+#     to offload the state-vector contraction to NVIDIA cuStateVec (H100 ready).
+# =============================================================================
 # Package Import
 from typing import List, Dict, Tuple
 

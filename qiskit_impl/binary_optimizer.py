@@ -1,4 +1,110 @@
 
+# =============================================================================
+# GPU OPTIMIZATION STRATEGY  (branch: gpuOptim)
+# =============================================================================
+#
+# OVERVIEW
+# --------
+# The current code runs on the CPU Aer statevector simulator.  The NREL HPC
+# module 'qiskit/aer-gpu' exposes AerSimulator with device='GPU' which uses
+# NVIDIA cuStateVec (cuQuantum) for GPU-accelerated statevector simulation.
+# The core bottleneck for all methods in this repo is the statevector
+# evolution step: for n qubits it requires 2^n complex amplitudes in memory
+# and O(2^n) work per gate layer.  The GPU provides massive parallelism for
+# exactly this operation.
+#
+# HACKATHON GOAL
+# --------------
+# Replace every call to Aer.get_backend('statevector_simulator') or
+# Aer.get_backend('aer_simulator_statevector') with a GPU-accelerated
+# AerSimulator and quantify the speedup.  Stretch goal: use
+# cuTensorNet (tensor network GPU backend) for deeper/wider circuits.
+#
+# THREE-TIER STRATEGY
+# -------------------
+#
+# TIER 1 -- Drop-in GPU backend swap (1-2 hours, zero algorithmic change)
+# -----------------------------------------------------------------------
+#   Replace:
+#     simulator = Aer.get_backend('statevector_simulator')
+#     simulator = Aer.get_backend('aer_simulator_statevector')
+#   With:
+#     from qiskit_aer import AerSimulator
+#     simulator = AerSimulator(method='statevector', device='GPU')
+#
+#   Locations in THIS file:
+#     - execute_optimizer()              -- statevector_simulator
+#     - execute_optimizer_oracle()       -- aer_simulator_statevector
+#     - execute_qae()                    -- aer_simulator_statevector
+#
+#   Expected speedup: 5-50x for circuits with n >= 20 qubits.
+#   Risk: ZERO -- pure backend swap, no circuit changes.
+#
+# TIER 2 -- Batched multi-shot execution (half-day)
+# -------------------------------------------------
+#   AerSimulator on GPU supports massive shot parallelism: running 10,000 shots
+#   in a single .run(shots=10000) call is far faster than 10,000 sequential runs
+#   because the GPU pipelines them.  The current code already uses shots= but
+#   calls simulator.run() once per x value in the outer loop.  Opportunity:
+#     - Batch all x values into a single transpile+run call using a list of circuits
+#     - Use Aer's 'executor' option to pin to GPU and set max_parallel_threads
+#
+#   Key API:
+#     simulator = AerSimulator(method='statevector', device='GPU',
+#                              max_parallel_shots=0,     # auto-detect
+#                              max_parallel_experiments=0)
+#     job = simulator.run([qc_x0, qc_x1, qc_x2, ...], shots=N)
+#     results = job.result()
+#
+# TIER 3 -- cuTensorNet for large circuits (stretch goal, 1-2 days)
+# ----------------------------------------------------------------
+#   For the full QAE circuit (n_system + m_qpe qubits, deep), cuTensorNet's
+#   tensor network contraction can simulate circuits too deep for dense
+#   statevector methods.  Switch:
+#     simulator = AerSimulator(method='tensor_network', device='GPU')
+#   This requires circuits with low entanglement entropy (MPS-friendly).
+#   The DQA circuit has local interactions (CP gates, SWAP pairs) which
+#   are naturally MPS-friendly -- this is worth benchmarking.
+#
+# CPU OPTIMIZATIONS (independent of GPU, apply on all tiers)
+# ----------------------------------------------------------
+#   A. Transpile ONCE outside loops:
+#      Currently transpile() is called inside every solve loop.
+#      Pre-transpile the parameterized circuit template once and only
+#      bind angles per iteration (use ParameterVector).
+#
+#   B. Eliminate circuit_to_gate() inside hot loops:
+#      circuit_to_gate() triggers a full circuit copy + gate compilation.
+#      In adiabatic_evolution_circuit(), it is called O(T) times per solve.
+#      Replace with direct .append() on already-compiled sub-circuits.
+#
+#   C. Use Statevector.evolve() for small n:
+#      For n_y <= 6 (64 amplitudes), numpy statevector ops on CPU may be
+#      faster than GPU launch overhead.  Auto-select backend by n_qubits:
+#        if n_qubits <= 12: use CPU  else: use GPU
+#
+# BENCHMARKING PLAN
+# -----------------
+#   1. Run brute_force_energy_surface() as classical baseline
+#   2. For n_y in [3, 4, 5, 6, 7, 8]: time execute_optimizer() on CPU vs GPU
+#   3. For m_qae in [3, 4, 5, 6, 7]:  time execute_qae() on CPU vs GPU
+#   4. Plot speedup vs n_qubits and vs circuit depth
+#   5. Report: max speedup, crossover point (where GPU beats CPU)
+#
+# FILES TO MODIFY FOR GPU PORT
+# ----------------------------
+#   qiskit_impl/binary_optimizer.py    -- ALL execute_*() methods (TIER 1)
+#   qiskit_impl/qae.py                 -- compile_qae_circuit() runner (TIER 1)
+#   qiskit_impl/ExpValFun_functions.py -- no simulator calls, but used by qae.py
+#   QuantumExpectedValueFunctionProject/dense_optimizer.py    -- many solveAnnealing*() (TIER 1)
+#   QuantumExpectedValueFunctionProject/expanded_optimizer.py -- same pattern
+#
+# DO NOT TOUCH
+# -----------
+#   resource_estimator.py  -- uses pytket/qualtran, unrelated to simulation
+#   dist_prep.py           -- pure circuit construction, no simulator calls
+# =============================================================================
+
 import numpy as np
 import scipy
 import random
@@ -418,6 +524,9 @@ class BinaryNestedOptimizer:
             dt = time/time_steps
             s = np.float64((dt*t)/time)
 
+            # CPU-OPT-A: transpile ONCE outside loops; currently called inside every adiabatic step
+            # CPU-OPT-B: circuit_to_gate() inside this time-step loop copies the circuit every
+            #            iteration -- replace with pre-compiled gates + ParameterVector angle binding
             qc.append(circuit_to_gate(self.cost_operator(s, self.recourse_cost, norm)), self.wind_qubits + self.pdf_qubits)
             qc.append(circuit_to_gate(self.demand_constraint_preserving_mixer((1-s)/np.pi)), self.wind_qubits)
             #qc.append(self.cost_operator(s, self.recourse_cost, norm), self.wind_qubits + self.pdf_qubits)
@@ -742,6 +851,8 @@ class BinaryNestedOptimizer:
     def execute_optimizer(self, qc, num_meas=None):
         # if no number of measurements is specified, try to use statevector
         if num_meas is None:
+            # GPU-TIER1: replace with AerSimulator(method='statevector', device='GPU')
+            # GPU-TIER2: for num_meas is not None, set max_parallel_shots=0 for GPU shot parallelism
             simulator = Aer.get_backend('statevector_simulator')
             #job = execute(circ, backend)
             qc = transpile(qc, simulator)
@@ -751,6 +862,7 @@ class BinaryNestedOptimizer:
         # use counts
         else:
             qc.measure_all()
+            # GPU-TIER1: replace with AerSimulator(method='statevector', device='GPU', max_parallel_shots=0)
             simulator = Aer.get_backend('aer_simulator_statevector')
             qc = transpile(qc, simulator)
             result = simulator.run(qc, shots=num_meas).result()
@@ -763,6 +875,7 @@ class BinaryNestedOptimizer:
         '''
         # if no number of measurements is specified, try to use statevector
         if num_meas is None:
+            # GPU-TIER1: replace with AerSimulator(method='statevector', device='GPU')
             simulator = Aer.get_backend('statevector_simulator')
             #job = execute(circ, backend)
             qc = transpile(qc, simulator)
@@ -777,6 +890,8 @@ class BinaryNestedOptimizer:
         # use counts
         else:
             #qc.measure_all()
+            # GPU-TIER1: replace with AerSimulator(method='statevector', device='GPU', max_parallel_shots=0)
+            # GPU-TIER2: batch multiple oracle evaluations into one shots call
             simulator = Aer.get_backend('aer_simulator_statevector')
             qc = transpile(qc, simulator)
             result = simulator.run(qc, shots=num_meas).result()
@@ -790,6 +905,8 @@ class BinaryNestedOptimizer:
         '''
         # if no number of measurements is specified, try to use statevector
         if num_meas is None:
+            # GPU-TIER1: replace with AerSimulator(method='statevector', device='GPU')
+            # GPU-TIER3: for large m (many QPE qubits), try method='tensor_network'
             simulator = Aer.get_backend('statevector_simulator')
             #job = execute(circ, backend)
             qc = transpile(qc, simulator)
@@ -809,6 +926,8 @@ class BinaryNestedOptimizer:
             qc_meas = QuantumCircuit(2*self.num_wind_vars+1+m, m)
             qc_meas.append(qc, list(range(2*self.num_wind_vars+1+m)))
             qc_meas.measure(list(range(2*self.num_wind_vars+1, 2*self.num_wind_vars+1+m)), list(range(m)))
+            # GPU-TIER1: replace with AerSimulator(method='statevector', device='GPU', max_parallel_shots=0)
+            # GPU-TIER2: batch multiple x values: pass [qc_x0, qc_x1, ...] to simulator.run()
             simulator = Aer.get_backend('aer_simulator_statevector')
             qc_meas = transpile(qc_meas, simulator)
             result = simulator.run(qc_meas, shots=num_meas).result()

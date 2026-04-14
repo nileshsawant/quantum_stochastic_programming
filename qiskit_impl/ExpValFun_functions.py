@@ -2,6 +2,36 @@
 created by csagal on 9/6/2024
 Script for running quantum optimization algorithms
 '''
+# =============================================================================
+# GPU PORTING STRATEGY  (branch: gpuOptim)
+# =============================================================================
+# This file is PURE CIRCUIT CONSTRUCTION -- none of the functions here call a
+# simulator directly.  All quantum circuits produced are passed to callers in
+# binary_optimizer.py / qae.py, where the actual execution happens.
+#
+# GPU impact here is INDIRECT:
+#
+#   TIER 1 (no changes in this file):
+#     Ensure the top-level executor (binary_optimizer.execute_optimizer /
+#     execute_qae) uses the GPU backend:
+#       AerSimulator(method='statevector', device='GPU')
+#
+#   TIER 2 (circuit re-use):
+#     alternating_operator_ansatz() is called inside the DQA time-step loop,
+#     building a fresh QuantumCircuit every iteration.  Refactor to build the
+#     circuit ONCE with ParameterVector angles, then bind parameters per step.
+#     This eliminates redundant Python-level circuit construction overhead and
+#     is especially important when the GPU kernel launch latency dominates.
+#
+#   TIER 2b (mixer / cost pre-compilation):
+#     demand_constraint_preserving_mixer() and stochastic_cost_operator() also
+#     get called inside inner loops.  Apply the same pre-compile + bind pattern
+#     to amortise the circuit build cost over all DQA steps.
+#
+#   TIER 3 (cuStateVec, no changes here):
+#     No changes needed in this file.  Enable cuStateVec in the Aer backend
+#     configuration in the executor file.
+# =============================================================================
 # Package Import
 import numpy as np
 from typing import List, Dict, Tuple

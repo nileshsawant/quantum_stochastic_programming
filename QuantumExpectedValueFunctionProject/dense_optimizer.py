@@ -5,6 +5,59 @@ Created on Thu Aug 10 13:07:10 2023
 
 @author: crotello
 """
+# =============================================================================
+# GPU PORTING STRATEGY  (branch: gpuOptim)
+# =============================================================================
+# This is the HIGHEST-VALUE file for GPU porting in the entire repo.
+# It contains ~8 annealing solve methods, all running statevector simulation
+# on CPU.  Swapping the backend here unlocks GPU for all of them at once.
+#
+# IMPORT FIX NEEDED BEFORE GPU PORTING:
+#   Line below uses deprecated APIs from Qiskit 2.x.  When porting:
+#     OLD:  from qiskit import QuantumCircuit, Aer
+#     NEW:  from qiskit import QuantumCircuit
+#           from qiskit_aer import Aer
+#
+#     OLD:  from qiskit.tools.visualization import plot_histogram
+#     NEW:  from qiskit.visualization import plot_histogram
+#
+#     OLD:  from qiskit.extensions import Initialize
+#     NEW:  qiskit.extensions was removed in Qiskit 2.x;
+#           use qiskit.circuit.library.Initialize or build a StatePreparation gate
+#
+# TIER 1 -- Drop-in GPU backend swap (8 locations, all marked GPU-SWAP below):
+#   Replace every:
+#     Aer.get_backend('statevector_simulator')
+        # GPU-SWAP TIER 1: replace next line with
+        #   from qiskit_aer import AerSimulator
+        #   simulator = AerSimulator(method='statevector', device='GPU')
+#     Aer.get_backend('aer_simulator_statevector')
+# GPU-SWAP TIER 1: replace next line with
+#   from qiskit_aer import AerSimulator
+#   simulator = AerSimulator(method='statevector', device='GPU')
+#     Aer.get_backend('aer_simulator')
+#   With the unified GPU-enabled backend:
+#     from qiskit_aer import AerSimulator
+#     simulator = AerSimulator(method='statevector', device='GPU')
+#   (On CPU fallback: device='CPU'; the rest of the call syntax stays the same)
+#
+# TIER 2 -- Transpile once, not per solve call:
+#   Every solve method calls transpile() independently.  Create a single
+#   transpiled circuit at the start of each DQA loop and reuse it.
+#
+# TIER 2b -- Batch shots with executor= parameter:
+#   AerSimulator accepts executor= for chunked GPU evaluation when the
+#   statevector does not fit in GPU VRAM.  Add:
+#     simulator = AerSimulator(method='statevector', device='GPU',
+#                              blocking_enable=True, blocking_qubits=23)
+#   to auto-slice large circuits across memory blocks.
+#
+# TIER 3 -- cuStateVec acceleration:
+#   For >20-qubit circuits enable NVIDIA cuStateVec:
+#     AerSimulator(method='statevector', device='GPU', cuStateVec_enable=True)
+#   cuStateVec is the fastest path on H100 and is already installed in the
+#   qiskit/aer-gpu module (cuquantum-cu12 26.3.0).
+# =============================================================================
 
 import optimizer_utils 
 
@@ -204,6 +257,9 @@ class Optimizer_Dense:
         qc.measure(list(range(self.num_qubits)), list(range(self.num_qubits)))
         
         # Transpile for simulator
+        # GPU-SWAP TIER 1: replace next line with
+        #   from qiskit_aer import AerSimulator
+        #   simulator = AerSimulator(method='statevector', device='GPU')
         simulator = Aer.get_backend('statevector_simulator')
         print('transpiling...')
         qc = transpile(qc, simulator)
@@ -288,6 +344,9 @@ class Optimizer_Dense:
         qc.measure(gas_qubits, gas_qubits)
         #print(qc)
         # Transpile for simulator
+        # GPU-SWAP TIER 1: replace next line with
+        #   from qiskit_aer import AerSimulator
+        #   simulator = AerSimulator(method='statevector', device='GPU')
         simulator = Aer.get_backend('aer_simulator_statevector')#aer_simulator_matrix_product_state')
         #print('transpiling...')
         qc = transpile(qc, simulator)
@@ -411,6 +470,9 @@ class Optimizer_Dense:
         qc.measure(gas_qubits, gas_qubits)
         #print(qc)
         # Transpile for simulator
+        # GPU-SWAP TIER 1: replace next line with
+        #   from qiskit_aer import AerSimulator
+        #   simulator = AerSimulator(method='statevector', device='GPU')
         simulator = Aer.get_backend('aer_simulator_statevector')#aer_simulator_matrix_product_state')
         #print('transpiling...')
         qc = transpile(qc, simulator)
@@ -539,6 +601,9 @@ class Optimizer_Dense:
         qc.measure(gas_qubits, gas_qubits)
         #print(qc)
         # Transpile for simulator
+        # GPU-SWAP TIER 1: replace next line with
+        #   from qiskit_aer import AerSimulator
+        #   simulator = AerSimulator(method='statevector', device='GPU')
         simulator = Aer.get_backend('aer_simulator_statevector')#aer_simulator_matrix_product_state')
         #print('transpiling...')
         qc = transpile(qc, simulator)
@@ -620,6 +685,9 @@ class Optimizer_Dense:
         qc.measure(gas_qubits, gas_qubits)
         #print(qc)
         # Transpile for simulator
+        # GPU-SWAP TIER 1: replace next line with
+        #   from qiskit_aer import AerSimulator
+        #   simulator = AerSimulator(method='statevector', device='GPU')
         simulator = Aer.get_backend('aer_simulator_statevector')#aer_simulator_matrix_product_state')
         #print('transpiling...')
         qc = transpile(qc, simulator)
@@ -713,6 +781,9 @@ class Optimizer_Dense:
         qc.measure(gas_qubits, gas_qubits)
         #print(qc)
         # Transpile for simulator
+        # GPU-SWAP TIER 1: replace next line with
+        #   from qiskit_aer import AerSimulator
+        #   simulator = AerSimulator(method='statevector', device='GPU')
         simulator = Aer.get_backend('aer_simulator_statevector')#aer_simulator_matrix_product_state')
         #print('transpiling...')
         qc = transpile(qc, simulator)
@@ -926,6 +997,9 @@ class Optimizer_Dense:
             gas_qubits = [q for varid in self.gas_varids for q in self.varid_to_qubits[varid]]
             qc.measure(gas_qubits, gas_qubits)
             # Transpile for simulator
+            # GPU-SWAP TIER 1: replace next line with
+            #   from qiskit_aer import AerSimulator
+            #   simulator = AerSimulator(method='statevector', device='GPU')
             simulator = Aer.get_backend('aer_simulator')
             qc = transpile(qc, simulator)
     
@@ -1062,6 +1136,9 @@ class Optimizer_Dense:
         qc.measure(gas_qubits, gas_qubits)
         #print(qc)
         # Transpile for simulator
+        # GPU-SWAP TIER 1: replace next line with
+        #   from qiskit_aer import AerSimulator
+        #   simulator = AerSimulator(method='statevector', device='GPU')
         simulator = Aer.get_backend('aer_simulator')
         #print('transpiling...')
         qc = transpile(qc, simulator)
