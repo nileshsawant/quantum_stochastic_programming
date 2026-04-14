@@ -290,6 +290,20 @@ class Optimizer_Dense:
             return 0
 
         qc.append(self.initializePDF(), self.pdf_qubits)
+        # PARAM-TRANSPILE: priceOperator(f), scenarioOperator(f), penaltyOperator(f, penalty),
+        # and the mixer sub-circuits are all rebuilt with a numeric f baked in every iteration.
+        # Transpile-once pattern (from bayesianQC/optimize_10epoch_performance.py):
+        #   1. from qiskit.circuit import Parameter
+        #      f_param = Parameter('f')
+        #   2. price_tmpl   = self.priceOperator(f_param)              # build ONCE symbolically
+        #      scene_tmpl   = self.scenarioOperator(f_param)           # build ONCE symbolically
+        #      penalty_tmpl = self.penaltyOperator(f_param, penalty)   # build ONCE symbolically
+        #      mixer_tmpl   = ... (rx or swapOperator with f_param)    # build ONCE symbolically
+        #   3. from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+        #      pm = generate_preset_pass_manager(optimization_level=1, backend=gpu_simulator)
+        #      price_t = pm.run(price_tmpl); scene_t = pm.run(scene_tmpl); ...  # transpile ONCE each
+        #   4. Inside loop: qc.append(price_t.assign_parameters({f_param: f_val}), ...)
+        #   Benefit: eliminates repeated Python gate-construction + retranspile for every Trotter step.
         for j in range(time_steps):
             dt_1 = total_time/time_steps
             f = (dt_1*j + 1)/(total_time + 1)
@@ -630,6 +644,9 @@ class Optimizer_Dense:
             print("Unimplemented initial state: {}".format(init_cond))
             return 0
 
+        # PARAM-TRANSPILE: Same pattern as solveAnnealingAlternating -- priceOperator, scenarioOperator,
+        # penaltyOperator, and mixer rebuild their circuits with a new numeric f every iteration.
+        # Apply the ParameterVector / assign_parameters approach described above that loop.
         for j in range(t_steps):
             dt = (total_time+1)/t_steps
             f = (dt*j + 1)/(total_time + 1)

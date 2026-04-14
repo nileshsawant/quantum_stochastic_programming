@@ -540,6 +540,18 @@ class BinaryNestedOptimizer:
 
         qc.append(self.dicke_state_initialize(wind_demand), self.wind_qubits)
         qc.barrier()
+        # PARAM-TRANSPILE: Both sub-circuits below are rebuilt from scratch each iteration
+        # with a numeric s baked in.  Transpile-once pattern (see bayesianQC/optimize_10epoch_performance.py):
+        #   1. from qiskit.circuit import Parameter
+        #      s_param = Parameter('s')
+        #   2. cost_tmpl  = self.cost_scenario_operator(scenario, s_param, ...)  # build ONCE symbolically
+        #      mixer_tmpl = self.demand_constraint_preserving_mixer(s_param)     # build ONCE symbolically
+        #   3. from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+        #      pm = generate_preset_pass_manager(optimization_level=1, backend=gpu_simulator)
+        #      cost_t  = pm.run(cost_tmpl)   # transpile ONCE
+        #      mixer_t = pm.run(mixer_tmpl)  # transpile ONCE
+        #   4. Inside loop: qc.append(cost_t.assign_parameters({s_param: s_val}), ...)
+        #   Speedup scales linearly with time_steps.
         for t in range(time_steps):
             #dt = (time+1)/time_steps
             #s = (dt*t + 1)/(time + 1)
