@@ -44,8 +44,32 @@ def sample_wvfn(probability_dict):
 
 
 
-# NOTE: for not, we just assume one gas generator with integer output
+# NOTE: for now, we just assume one gas generator with integer output
 class BinaryNestedOptimizer:
+    """
+    Quantum + classical solver for the two-stage stochastic unit commitment (UC) problem.
+
+    Problem structure
+    -----------------
+    First stage  (x) : choose how much power the gas generator provides
+                       (integer, 0 <= x <= demand).  Cost = x * gas_cost.
+    Second stage (y) : given x and a *realized* wind scenario ξ, choose which
+                       wind turbines to turn on (y ∈ {0,1}^n_y, sum(y) = demand - x).
+                       Cost = Σ_j c_y[j]*y[j]*ξ[j]  +  recourse*(shortfall)
+    Objective        : minimize  gas_cost(x) + E_ξ[ min_y q(y, ξ) ]
+
+    Quantum qubit layout (used consistently across ALL circuits)
+    ------------------------------------------------------------
+    wind_qubits  [0 .. n_y-1]           : y register  — binary turbine ON/OFF decisions
+    pdf_qubits   [n_y .. 2*n_y-1]       : ξ register  — wind scenario, loaded with PDF amplitudes
+    ancilla      [2*n_y]                : oracle ancilla for QAE
+                                          |0⟩ →  √(1-q̄)|0⟩ + √q̄|1⟩   (cost encoded as amplitude)
+    estimate     [2*n_y+1 .. +m]        : m QPE readout qubits  (QAE output: integer b)
+
+    The DQA (Discrete Quantum Annealing) circuit evolves the system from
+    the Dicke state (uniform superposition over feasible y) toward the
+    optimal state by interpolating between the XY mixer and the cost operator.
+    """
     def __init__(self, gas_costs: list[float], wind_costs: list[float], recourse_cost: float, pdf: dict[tuple[int], float], demand: int, is_uniform: bool):
         self.gas_costs = gas_costs
         self.num_gas_vars = len(gas_costs)
@@ -78,8 +102,20 @@ class BinaryNestedOptimizer:
         #return bstrs
     
     def wind_scenario_cost(self, wind_output: list[int], scenario: tuple[int], wind_demand: int) -> float:
-        ''' given a list of wind outputs and the corresponding scenario, return the cost of that scenario
-        '''
+        """
+        Compute second-stage cost  q(y, ξ)  for one turbine decision and one wind scenario.
+
+        For each turbine j:
+          effective_output[j] = wind_output[j] AND scenario[j]
+            → turbine j generates power only if it is ON (y[j]=1) AND wind blows (ξ[j]=1)
+          cost contribution   = wind_costs[j] * effective_output[j]
+
+        If total effective output < wind_demand:
+          shortfall = wind_demand - sum(effective_output)
+          recourse  = shortfall * recourse_cost   ← expensive backup power purchase
+
+        This is q(x, y, ξ) from Eq. (2) of the paper.
+        """
         true_output = np.array(wind_output)*np.array(scenario)
         cost = sum(np.array(self.wind_costs) * true_output)
         #print(true_output, wind_output, scenario)
@@ -92,7 +128,19 @@ class BinaryNestedOptimizer:
         return [int(i) for i in bstr]
 
     def prep_gs(self, wind_demand):
-        ''' create a statevector which is the minima for each scenario '''
+        """
+        Build the ideal "ground-state" wavefunction |ψ*⟩ — the state perfect DQA would produce.
+
+        For each scenario ξ (with probability Pr[ξ]):
+          1. Solve  y*(ξ) = argmin_{sum(y)=wind_demand} q(y, ξ)  classically
+          2. Place amplitude  √Pr[ξ]  on the basis state  |y*(ξ)⟩|ξ⟩
+
+        The resulting statevector satisfies:
+          ⟨ψ*| H_Q |ψ*⟩  =  E_ξ[ min_y q(y,ξ) ]  =  φ(x)   (Eq. 20 of paper)
+
+        This is the benchmark target.  Real DQA produces an approximation
+        (residual temperature δ > 0 means some amplitude leaks to sub-optimal states).
+        """
         wvfn = np.zeros(2**(2*self.num_wind_vars))
         # use the min_scenario to get the best decision for each scenario
         for scenario,pr in self.pdf.items():
@@ -106,7 +154,16 @@ class BinaryNestedOptimizer:
 
     ## Classical solvers
     def min_scenario(self, wind_demand, scenario):
-        ''' get the minimization for a single wind scenario '''
+        """
+        Classical brute-force second-stage solver for ONE fixed wind scenario ξ.
+
+        Enumerate all turbine decisions y with sum(y) == wind_demand (the feasible set),
+        evaluate q(y, ξ) for each, and return the cheapest one:
+
+            y*(ξ) = argmin_{y : sum(y)=wind_demand}  q(y, ξ)
+
+        Returns: (min_cost, optimal_turbine_decision_tuple)
+        """
         min_wind_cost = self.recourse_cost*self.demand+1
         min_wind_decision = []
         # if we have not made a list of wind outputs, make the list
@@ -170,7 +227,25 @@ class BinaryNestedOptimizer:
         return qc
     
     def dicke_state_circuit(self, weight):
-        ''' https://arxiv.org/pdf/1904.07358.pdf '''
+        """
+        Prepare the Dicke state  |D_n^k⟩  with n = num_wind_vars qubits and k = weight ones.
+
+        The Dicke state is a uniform superposition over ALL bitstrings with exactly k ones:
+
+            |D_n^k⟩ = 1/√C(n,k)  Σ_{|y|=k} |y⟩
+
+        This is the constraint-respecting initial state for DQA: every basis state in
+        the superposition already satisfies sum(y) = wind_demand.
+
+        Construction uses the recursive SCS (Splitting-Coherence-Splitting) gadget from:
+            Bärtschi & Eidenbenz, arXiv:1904.07358  (Fig. 1)
+
+        SCS(n, k) acts on k+1 qubits and "moves" one unit of weight downward:
+          - CX + doubly-controlled RY: redistribute amplitude between |1...1 0⟩ and |1...0 1⟩
+          - Applied (n-k) times top-down, then (k-1) times bottom-up
+
+        Gate count: O(n*k)  with no ancilla, depth O(n).
+        """
         qc = QuantumCircuit(self.num_wind_vars, name='DickeState')
         if weight == 0:
             return qc
@@ -218,9 +293,27 @@ class BinaryNestedOptimizer:
         return qc.to_gate()
 
     def cost_operator(self, amplitude, constraint_amplitude, norm):
-        ''' our cost operator
-            constraint_amplitude will be recourse for the constraint-preserving mixer, and a penalty weight otherwise
-        '''
+        """
+        Build the cost (phase) operator  U_q(γ) = exp(-i γ H_C).
+
+        For each turbine j, applies TWO controlled-phase (CP) gates:
+
+          CP(γ · c_y[j] / norm)   on [pdf_qubit_j, wind_qubit_j]
+            → adds phase  γ·c_y[j]/norm  when BOTH y[j]=1 AND ξ[j]=1
+              (turbine ON and wind available → incurs operational cost)
+
+          X(pdf_qubit_j)  →  CP(γ · recourse / norm)  →  X(pdf_qubit_j)
+            → adds phase  γ·recourse/norm  when y[j]=1 AND ξ[j]=0
+              (turbine ON but no wind → incurs recourse penalty)
+
+        The CP gate  CP(θ)|11⟩ = e^(iθ)|11⟩  implements  exp(i·θ·|1⟩⟨1| ⊗ |1⟩⟨1|),
+        which is the diagonal cost Hamiltonian acting as a phase kick on computational basis states.
+
+        `amplitude`            = γ (annealing parameter, 0..1)
+        `constraint_amplitude` = recourse cost coefficient
+        `norm`                 = normalization factor (prevents phase wrapping)
+        Corresponds to U_q in Eq. (42) of the paper.
+        """
         qc = QuantumCircuit(self.num_wind_vars*2, name=r'$U_q({})$'.format(np.round(amplitude, 3)))
         for q_w,cost in enumerate(self.wind_costs):
             q_pdf = self.pdf_qubits[q_w]
@@ -232,8 +325,23 @@ class BinaryNestedOptimizer:
         return qc
 
     def demand_constraint_preserving_mixer(self, amplitude):
-        ''' mixing operator which preserves the demand constraint
-        '''
+        """
+        Build the XY mixer  U_d(β) = exp(-i β H_XY)  that preserves Hamming weight.
+
+        For every pair of qubits (j, k):  applies  SWAP^β  (a fractional SWAP gate).
+
+        SWAP^β  interpolates between identity (β=0) and a full SWAP (β=1):
+
+            SWAP^β = exp(-i β π/2 · (XX + YY)/2)
+
+        The XX+YY part of the Hamiltonian is the XY model — it moves excitations
+        between qubits without changing the total number of |1⟩s.  This ensures
+        that mixing only connects states with the SAME sum(y) = wind_demand.
+
+        Combined with the Dicke state initializer, this keeps the entire DQA
+        evolution within the feasible subspace  {y : sum(y) = wind_demand}.
+        Corresponds to U_d (Eq. 39) of the paper.
+        """
         qc = QuantumCircuit(self.num_wind_vars, name=r'$U_d({})$'.format(np.round(amplitude, 3)))
         layers = 1
         for layer in range(layers):
@@ -252,8 +360,33 @@ class BinaryNestedOptimizer:
         return qc
 
     def adiabatic_evolution_circuit(self, wind_demand, time, time_steps, norm):
-        ''' adiabatic evolution; currently only using the constraint-preserving mixer 
-        '''
+        """
+        Build the Discrete Quantum Annealing (DQA) circuit  U_DQA(T).
+
+        Implements the alternating-operator ansatz (QAOA-style) with a LINEAR
+        annealing schedule  s(t) = t/T  interpolating from mixer-dominated (t=0)
+        to cost-dominated (t=T):
+
+            U_DQA = Π_{t=0}^{T-1}  U_q(s(t))  ·  U_d(1 - s(t))
+
+        At t=0: s=0 → full mixing, no cost → system stays in Dicke state (uniform)
+        At t=T: s=1 → full cost,  no mixing → system is "frozen" near cost minimum
+
+        The adiabatic theorem guarantees that if T is large enough relative to
+        the inverse spectral gap, the final state is close to the ground state
+        of H_C (i.e., the optimal turbine assignment for each scenario).
+
+        Initialization:
+          - Dicke state |D_n^{wind_demand}⟩ on wind_qubits
+          - PDF state |P⟩ on pdf_qubits  (encodes scenario probabilities)
+
+        Parameters
+        ----------
+        wind_demand : integer k  (sum(y) must equal this)
+        time        : total annealing time T (scales schedule)
+        time_steps  : number of Trotter steps (circuit depth)
+        norm        : cost normalization (keeps phases in [0, 2π])
+        """
         qc = QuantumCircuit(self.num_wind_vars*2, name='Uopt')
         
         #qc.append(circuit_to_gate(self.dicke_state_initialize(wind_demand)), self.wind_qubits)
@@ -294,6 +427,32 @@ class BinaryNestedOptimizer:
     #### Set aside a suite of QAE algorithms
     ####
     def implemented_qae(self, op, oracle, op_inv, oracle_inv, m, norm):
+        """
+        Build the canonical Quantum Amplitude Estimation (QAE) circuit.
+        (Brassard et al. 2002, also Fig. 2 of the paper)
+
+        Goal: estimate  a = E_ξ[q̄(y,ξ)]  (the normalized expected cost)
+              with error O(1/2^m) using 2^m Grover applications.
+
+        Qubit layout:
+          [0 .. m-1]              : m QPE estimate qubits (readout)
+          [m .. m+2*n_y-1]        : system qubits (wind + pdf)
+          [m+2*n_y]               : ancilla qubit
+
+        Circuit structure:
+          1. H⊗m on estimate qubits  →  superposition |0⟩+|1⟩+...+|2^m-1⟩
+          2. A  = oracle · op  applied once on system + ancilla
+             Prepares:  √(1-a)|ψ_bad⟩|0⟩ + √a|ψ_good⟩|1⟩
+          3. Controlled-Grover repetitions: for i=0..m-1, controlled on estimate qubit i:
+               - S_ψ0 : flip phase of ancilla=|1⟩ states  (X·CZ·X on ancilla)
+               - A†   : invert oracle then invert op
+               - S_0  : flip phase of |00...0⟩  (X-flip all, MCZ, X-flip back)
+               - A    : reapply op then oracle
+             Each iteration of j applies this block 2^i times, encoding θ_a
+             as a binary fraction in the QPE phase register.
+          4. IQFT on estimate qubits  →  phase → readable integer b
+          Measurement: b → ã = sin²(b·π/2^m) → φ̃(x) = ã·norm
+        """
         ancilla = m+2*self.num_wind_vars
         qc = QuantumCircuit(2*self.num_wind_vars+1+m)
         for i in range(m):
@@ -356,8 +515,26 @@ class BinaryNestedOptimizer:
         #return ae_result.estimation, ae_result.mle
 
     def exact_oracle(self, ydemand, norm, inverse=False):
-        ''' compute the exact oracle - obviously untractable, but helpful for actually determining accuracy 
-        '''
+        """
+        Build the exact oracle  F_exact  (Eq. 44 of paper).
+
+        For every (y, ξ) basis state that satisfies sum(y) == ydemand:
+
+            F_exact |y⟩|ξ⟩|0⟩_anc  =  |y⟩|ξ⟩ · (√(1-q̄)|0⟩ + √q̄|1⟩)
+
+        where  q̄ = q(y,ξ)/norm  is the normalized cost.
+        After this operation  Pr[ancilla = |1⟩] = q̄.
+
+        Implementation — "bit-flip sandwich" for each basis state:
+          1. Flip X on every qubit where the target bit pattern is 0
+             → now ALL control qubits are |1⟩ for this basis state only
+          2. Apply multi-controlled RY(2·arcsin(√q̄)) on the ancilla
+             → fires *only* when all controls are |1⟩ = when system is in this exact state
+          3. Flip X back on the same qubits  (uncompute)
+
+        This requires O(2^{2n_y}) gates and is impractical at scale, but gives
+        the exact result for small n_y.  Used only as a convergence benchmark.
+        """
         # let's grab a control operator for each bitstring
         qc = QuantumCircuit(2*self.num_wind_vars+1)
         #Fdiag = [0.]*2**(self.num_wind_vars*2)
@@ -403,8 +580,29 @@ class BinaryNestedOptimizer:
         0
 
     def single_oracle_sin_inconstraint(self, c, norm, inverse=False):
-        ''' compute the oracle ont an ancilla qubit - assuming our states are in-constraint, using the sin approx
-        '''
+        """
+        Build the practical sin-approximation oracle  F_sin  (Eq. 45 of paper).
+
+        Uses the small-angle approximation  sin(θ) ≈ θ  to decompose the oracle
+        into O(n_y) doubly-controlled RY gates instead of O(2^n) multi-controlled ones.
+
+        For each turbine j, applies TWO CCRY (doubly-controlled RY) pairs:
+
+          CCRY(π·c_y[j]/norm)  controlled on [wind_qubit_j, pdf_qubit_j] → ancilla
+            → fires when y[j]=1 AND ξ[j]=1  (turbine ON, wind available)
+            → rotates ancilla by  π·c_y[j]/norm  (encodes operational cost)
+
+          X(pdf_qubit_j)  then  CCRY(π·c_r/norm)  then  X(pdf_qubit_j)
+            → fires when y[j]=1 AND ξ[j]=0  (turbine ON, no wind)
+            → rotates ancilla by  π·c_r/norm  (encodes recourse cost)
+
+        The approximation works because costs are a SUM over independent turbines,
+        so each turbine's contribution can be added independently to the ancilla.
+        Error grows with the magnitude of individual cost angles.
+
+        `c`    = cost normalization scalar  (controls scale = π·c/norm)
+        `norm` = maximum cost  (prevents ancilla from over-rotating past π/2)
+        """
         qc = QuantumCircuit(self.num_wind_vars*2 + 1, name='F')
         ancilla = self.num_wind_vars*2
         scale = np.pi*c/norm

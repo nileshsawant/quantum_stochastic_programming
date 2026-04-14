@@ -49,6 +49,20 @@ args['oracle_circuit']
 '''
 
 class QAE_Optimizer:
+    """
+    Assembles and runs the canonical Quantum Amplitude Estimation (QAE) algorithm
+    for the two-stage stochastic optimization problem.
+
+    The QAE_Optimizer takes a user-supplied dictionary `args` that provides:
+      - Problem dimensions  (n_y, m, y_reg, pdf_reg)
+      - Circuit factories    (cost_operator_circuit, mixer_operator_circuit,
+                              initial_state_circuit, pdf_circuit, oracle_circuit)
+      - Annealing angles    (Theta list, w_d wind demand, norm)
+      - Misc flags          (uniform PDF, gateset for transpilation)
+
+    The main output is `compile_qae_circuit()` which returns the full QAE
+    QuantumCircuit ready to run on a simulator or hardware.
+    """
 
     def __init__(self, args:dict):
 
@@ -71,7 +85,18 @@ class QAE_Optimizer:
 
     def compile_qae_circuit(self) -> QuantumCircuit:
         '''
-        Generates and returns qiskit QuantumCircuit object to run QAE algorithm on user-specified problem
+        Assemble the full QAE circuit for the user-specified problem.
+
+        Steps:
+          1. Build the DQA ansatz circuit  op  = alternating_operator_ansatz(args)
+             (Dicke-state init → alternating cost + mixer layers at angles Theta)
+          2. Build the oracle circuit  oracle  (encodes cost as ancilla amplitude)
+          3. Combine into full QAE via implemented_qae()
+
+        Returns a QuantumCircuit with layout:
+          [0..m-1]       : m QPE estimate qubits (readout after IQFT)
+          [m..m+2n_y-1]  : system qubits (y-register + pdf-register)
+          [m+2n_y]       : ancilla qubit
         '''
         op = alternating_operator_ansatz(self.args)
         op_inv = op.inverse()
@@ -83,9 +108,40 @@ class QAE_Optimizer:
         return qae_circuit
 
     def implemented_qae(self, op, oracle, op_inv, oracle_inv) -> QuantumCircuit:
-        '''
-        Takes QuantumCircuit objects and returns QuantumCircuit object representing the QAE algorithm
-        '''
+        """
+        Build the canonical QAE circuit (Brassard et al. 2002, Fig. 2 of paper).
+
+        Qubit layout:
+          [0..m-1]      : m estimate (QPE) qubits
+          [m..m+2n_y-1] : system qubits
+          [m+2n_y]      : ancilla qubit  (ancilla index = m + 2*n_y)
+
+        Circuit in order:
+          1. H^{\otimes m} on estimate qubits
+             → creates superposition so QPE can probe all powers of Q simultaneously
+
+          2. op  on system qubits  (DQA circuit — prepares optimal superposition)
+             oracle  on system + ancilla  (encodes cost as Pr[ancilla=|1⟩])
+
+          3. For each estimate qubit i (0..m-1), repeat 2^i times:
+               a) S_ψ0: X(ancilla) · CZ(estimate_i, ancilla) · X(ancilla)
+                  → phase-flip on ancilla=|0⟩ states (marks the "bad" subspace)
+               b) A^{-1}: oracle_inv.control(1) then op_inv.control(1)
+                  → uncompute A, controlled on estimate qubit i
+               c) S_0: X all system+ancilla qubits, controlled-MCZ, X back
+                  → phase-flip on |0...0⟩ (the zero-reflection for Grover)
+               d) A: op.control(1) then oracle.control(1)
+                  → reapply A, controlled on estimate qubit i
+             Together (a)-(d) implement one application of the Grover operator Q,
+             controlled on estimate qubit i.  The 2^i repetitions encode the
+             eigenphase 2*arcsin(sqrt(a)) as a binary fraction in the QPE register.
+
+          4. IQFT on estimate qubits  →  phase → integer b
+
+        Post-processing (done outside this function):
+          a_tilde   = sin^2(b * pi / 2^m)
+          phi_tilde = a_tilde * norm
+        """
         ancilla = self.m + 2*self.n_y 
         qc = QuantumCircuit(self.m + 2*self.n_y  + 1) 
         for i in range(self.m):
