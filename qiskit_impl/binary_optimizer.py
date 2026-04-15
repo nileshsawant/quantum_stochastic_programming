@@ -294,8 +294,18 @@ class BinaryNestedOptimizer:
         return min_wind_cost,tuple(min_wind_decision)
 
     def brute_force_wind_demand_expectation_values(self):
-        ''' solve for the energy surface of expected cost as a function of demand on the wind turbines
-        '''
+        """Compute the classical exact expected cost for every possible wind demand.
+
+        For each integer `wind_demand` in `[0, demand]`, enumerates all feasible
+        turbine decisions and scenarios to compute:
+
+        $$\\phi(k) = \\mathbb{E}_{\\xi}[\\min_{|y|=k} q(y, \\xi)]$$
+
+        This is the classical brute-force ground truth used to benchmark DQA and QAE.
+
+        Returns:
+            List of floats `[phi(0), phi(1), ..., phi(demand)]`.
+        """
         demand_surface = []
         # check each integer demand which we could expect the wind turbines to fulfill
         for wind_demand in range(self.demand+1):
@@ -309,8 +319,17 @@ class BinaryNestedOptimizer:
         return demand_surface
 
     def brute_force_energy_surface(self):
-        ''' go through each gas output, and get it's objective function
-        '''
+        """Compute the full first-stage objective function over all gas levels.
+
+        For each gas commitment level `x` in `[0, demand]`:
+
+        $$o(x) = x \\cdot c_x + \\phi(\\text{demand} - x)$$
+
+        where `phi` is from `brute_force_wind_demand_expectation_values()`.
+
+        Returns:
+            Dict `{gas_level: objective_value}` — the classical optimal is `min(o.values())`.
+        """
         obj_x = {}
         wind_demand_surface = self.brute_force_wind_demand_expectation_values()
         for wind_demand,expectation_value in enumerate(wind_demand_surface):
@@ -321,7 +340,17 @@ class BinaryNestedOptimizer:
 
     ## quantum helpers
     def dicke_state_initialize(self, weight):
-        ''' Create a dicke state with 'initialize' function '''
+        """Convenience wrapper around `dicke_state_circuit()` returning a gate object.
+
+        Returns a gate that prepares $|D_n^k\\rangle$ on `num_wind_vars` qubits
+        with `weight` excitations. Delegates to `dicke_state_circuit()`.
+
+        Args:
+            weight: Integer $k$ — number of turbines to turn on (Hamming weight).
+
+        Returns:
+            Gate object for the Dicke state preparation.
+        """
         qc = QuantumCircuit(self.num_wind_vars, name=r"$|D_n^{d-y}\rangle$")
         ## What happens if classical init. cond?
         #for i in range(weight):
@@ -391,7 +420,19 @@ class BinaryNestedOptimizer:
         return qc.to_gate()
 
     def pdf_initialize(self):
-        ''' Create the pdf as a wavefunction '''
+        """Build a circuit that encodes the PDF as amplitudes on the xi register.
+
+        Prepares the state $|\\mathcal{P}\\rangle = \\sum_\\xi \\sqrt{\\Pr[\\xi]}|\\xi\\rangle$
+        so that measuring the xi register gives scenario $\\xi$ with probability $\\Pr[\\xi]$.
+
+        Two cases:
+
+        - `is_uniform=True`: $n$ Hadamard gates — $O(n)$ circuit depth.
+        - `is_uniform=False`: Qiskit `Initialize` — $O(2^n)$ gates after transpile.
+
+        Returns:
+            Gate object (via `.to_gate()`) acting on `num_wind_vars` qubits.
+        """
         qc = QuantumCircuit(self.num_wind_vars, name=r'$|\mathcal{P}\rangle$')
         if self.is_uniform:#np.isclose(list(self.pdf.values()), [1/2**self.num_wind_vars]*2**self.num_wind_vars).all():
             for i in range(self.num_wind_vars):
@@ -474,6 +515,28 @@ class BinaryNestedOptimizer:
         return qc
 
     def cost_scenario_operator(self, scenario, amplitude, constraint_amplitude, norm):
+        """Build the single-scenario cost (phase) operator for a fixed wind scenario.
+
+        Unlike `cost_operator` (which loops over all scenarios in superposition),
+        this version acts only on the y-register and encodes the cost for one
+        specific scenario xi deterministically.
+
+        For each turbine j:
+
+        - If `scenario[j] == 0` (no wind): apply `P(amplitude * recourse / norm)` on qubit j.
+        - If `scenario[j] == 1` (wind):    apply `P(amplitude * c_y[j] / norm)` on qubit j.
+
+        Used in `adiabatic_evolution_scenario_circuit()` for single-scenario DQA.
+
+        Args:
+            scenario: Tuple of 0/1 values encoding the wind scenario xi.
+            amplitude: Annealing parameter gamma (0 to 1).
+            constraint_amplitude: Recourse cost coefficient c_r.
+            norm: Cost normalization factor (prevents phase wrapping).
+
+        Returns:
+            QuantumCircuit acting on `num_wind_vars` qubits.
+        """
         qc = QuantumCircuit(self.num_wind_vars)
         for q_w, cost in enumerate(self.wind_costs):
             if scenario[q_w] == 0:
@@ -798,8 +861,28 @@ class BinaryNestedOptimizer:
        
 
     def single_oracle_asin_inconstraint(self, norm, inverse=False):
-        ''' compute the oracle onto an ancilla qubit - assuming our states are all in-constraint, using the arcsin approximate
-        '''
+        """Build the arcsin oracle using exact RY angles (more accurate than sin oracle).
+
+        Applies CCRY rotations with angles $2\\arcsin(\\sqrt{c/\\text{norm}})$ instead
+        of the small-angle approximation $\\pi c/\\text{norm}$ used by
+        `single_oracle_sin_inconstraint()`.
+
+        For each turbine j:
+
+        - `theta_cy = 2*arcsin(sqrt(c_y[j]/norm))` — exact rotation for operational cost
+        - `theta_cr = 2*arcsin(sqrt(c_r/norm))`    — exact rotation for recourse cost
+
+        More accurate than `F_sin` at the cost of a different approximation error
+        profile (arcsin vs. linear). Requires `c_y/norm <= 1` and `c_r/norm <= 1`.
+
+        Args:
+            norm: Maximum cost; all costs must satisfy `c <= norm`.
+            inverse: If `True`, negate all rotation angles (returns $\\mathcal{F}^\\dagger$).
+
+        Returns:
+            QuantumCircuit on `2*num_wind_vars + 1` qubits (system + ancilla).
+        """
+        # compute the oracle onto an ancilla qubit - arcsin approximate
         qc = QuantumCircuit(self.num_wind_vars*2 + 1, name='F')
         ancilla = self.num_wind_vars*2
         for q in self.wind_qubits:
@@ -861,6 +944,26 @@ class BinaryNestedOptimizer:
 
     # executors
     def execute_optimizer(self, qc, num_meas=None):
+        """Execute the DQA circuit and return measurement results.
+
+        Two modes:
+
+        - `num_meas=None`: Run with the statevector simulator (exact). Returns a
+          probability dictionary `{bitstring: probability}`.
+        - `num_meas=N`: Append `measure_all()` and run N shots. Returns a
+          normalized count dictionary `{bitstring: count/N}`.
+
+        !!! tip "GPU Tier 1"
+            Replace `Aer.get_backend('statevector_simulator')` with
+            `AerSimulator(method='statevector', device='GPU')` for H100 speedup.
+
+        Args:
+            qc: The DQA `QuantumCircuit` to execute.
+            num_meas: Number of measurement shots, or `None` for exact statevector.
+
+        Returns:
+            Dict mapping bitstrings to probabilities (exact) or normalized counts (sampled).
+        """
         # if no number of measurements is specified, try to use statevector
         if num_meas is None:
             # GPU-TIER1: replace with AerSimulator(method='statevector', device='GPU')
@@ -883,8 +986,29 @@ class BinaryNestedOptimizer:
             return counts
     
     def execute_optimizer_oracle(self, qc, num_meas=None):
-        ''' given the optimizer followed by the oracle, get the amplitude of the ancilla register
-        '''
+        """Execute the DQA + oracle circuit and return the ancilla amplitude.
+
+        Runs the circuit that is DQA followed by the oracle, then marginalizes
+        over the ancilla qubit to recover the amplitude $a = \\Pr[\\text{ancilla}=|1\\rangle]$.
+        This $a$ is the normalized expected cost $\\bar{\\phi}(x)$.
+
+        Two modes:
+
+        - `num_meas=None`: Exact statevector — sums probability of all states with ancilla=`1`.
+        - `num_meas=N`: Sampled — returns `counts['1'] / N`.
+
+        !!! tip "GPU Tier 1"
+            Replace `Aer.get_backend('aer_simulator_statevector')` with
+            `AerSimulator(method='statevector', device='GPU')`.
+
+        Args:
+            qc: Circuit comprising DQA followed by the oracle (ancilla is MSB).
+            num_meas: Number of shots, or `None` for exact statevector.
+
+        Returns:
+            Float in [0, 1] — the amplitude on the ancilla `|1⟩` state.
+        """
+        # if no number of measurements is specified, try to use statevector
         # if no number of measurements is specified, try to use statevector
         if num_meas is None:
             # GPU-TIER1: replace with AerSimulator(method='statevector', device='GPU')
@@ -912,9 +1036,38 @@ class BinaryNestedOptimizer:
 
 
     def execute_qae(self, qc, m, num_meas=None):
-        ''' assume we have the full qae circuit
-            specify how many sample qubits there are
-        '''
+        """Execute the full QAE circuit and return the QPE readout distribution.
+
+        Runs the canonical QAE circuit (built by `implemented_qae()`) and returns
+        measurement outcomes of the $m$ QPE estimate qubits.
+
+        Post-processing (done by caller):
+
+        ```python
+        b_str = max(b_counts, key=b_counts.get)   # most probable readout
+        b_int = int(b_str, 2)
+        a_tilde   = np.sin(b_int * np.pi / (2**m))**2
+        phi_tilde = a_tilde * norm
+        ```
+
+        Two modes:
+
+        - `num_meas=None`: Exact statevector, marginalizes over the system qubits.
+        - `num_meas=N`: Sampled, applies measurement gates on the $m$ estimate qubits only.
+
+        !!! tip "GPU Tier 1 + Tier 3"
+            Replace backend with `AerSimulator(method='statevector', device='GPU')`.
+            For `m >= 7`, also enable `cuStateVec_enable=True`.
+
+        Args:
+            qc: The full QAE `QuantumCircuit` (from `implemented_qae()`).
+            m: Number of QPE estimate qubits (determines resolution: error ~ 1/2^m).
+            num_meas: Number of shots, or `None` for exact statevector.
+
+        Returns:
+            Dict `{b_bitstring: probability}` over all $2^m$ QPE outcomes.
+        """
+        # if no number of measurements is specified, try to use statevector
         # if no number of measurements is specified, try to use statevector
         if num_meas is None:
             # GPU-TIER1: replace with AerSimulator(method='statevector', device='GPU')
@@ -950,8 +1103,25 @@ class BinaryNestedOptimizer:
 
     # post-processors
     def process_expectation_value_optimizer(self, wind_demand, counts):
-        ''' post-process the counts returned from only the optimizer to get the expectation value
-        '''
+        """Convert DQA measurement counts to the classical expected cost.
+
+        Post-processes the output of `execute_optimizer()` into an expected cost
+        estimate by evaluating `wind_scenario_cost()` for each measured bitstring
+        and weighting by its probability:
+
+        $$\\tilde{\\phi}(x) = \\sum_{(y, \\xi)} p(y, \\xi) \\cdot q(y, \\xi)$$
+
+        where the sum is over all bitstrings in `counts` and $p$ is the
+        normalized measurement frequency.
+
+        Args:
+            wind_demand: Integer $k$ — required Hamming weight of turbine decisions.
+            counts: Dict `{bitstring: probability}` from `execute_optimizer()`.
+                Bitstring layout: `[y_0, ..., y_{n-1}, xi_0, ..., xi_{n-1}]`.
+
+        Returns:
+            Float — estimated expected second-stage cost $\\tilde{\\phi}(x)$.
+        """
         expectation_value = 0.
         for bstr,val in counts.items():
             output = self.bstr_to_output(bstr)

@@ -72,12 +72,27 @@ from qiskit.extensions import Initialize
 import numpy as np
 
 class Optimizer_Dense:
+    """Quantum optimizer that keeps wind scenarios in superposition (dense encoding).
+
+    Encodes gas + wind turbine decisions in decision registers and wind scenarios
+    in a PDF register, all in the same quantum state simultaneously.  The PDF
+    register is initialized with $\\sqrt{\\Pr[\\xi]}$ amplitudes so that measuring
+    the decision register alone gives the marginal over scenarios.
+
+    This is the approach that makes QAE applicable: the oracle only needs to act
+    on the combined system, and the expected cost appears as the amplitude on the
+    ancilla qubit after the oracle is applied.
+
+    Qubit layout (in order):
+        gas registers, wind registers [, slack register], pdf registers
+
+    Args:
+        system: A `PowerSystem_1Bus` instance defining the UC problem.
+        encoding: `'binary'` or `'unary'` — how integers are encoded in qubit registers.
+        slack_register: If `True`, add a slack variable for soft demand constraints.
+    """
     def __init__(self, system, encoding, slack_register=False):
-        ''' ctor. 
-            Take the PowerSystem we will be solving, reserve variables and qubits
-            
-            Order the variables as gas, wind, slack, pdf
-        '''
+        '''Initialize the optimizer from a PowerSystem and allocate qubit registers.'''
         assert(encoding == 'binary' or encoding == 'unary')
         self.system = system
         self.encoding = encoding

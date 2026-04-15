@@ -23,6 +23,24 @@ args should be the same as the args in qae.py, but should also contain the requi
 '''
 
 def make_normal_distribution_circuit(args:dict) -> QuantumCircuit:
+    """Build a quantum circuit encoding a normal (Gaussian) distribution.
+
+    Wraps Qiskit Finance's `NormalDistribution` to encode
+    $p(\\xi) \\sim \\mathcal{N}(\\mu, \\sigma^2)$ as amplitudes on `n_y` qubits.
+
+    Args:
+        args: Dictionary with keys:
+            `n_y` (int): number of qubits.
+            `mu` (float): mean of the distribution.
+            `sigma` (float): standard deviation.
+
+    Returns:
+        QuantumCircuit encoding the normal distribution on `n_y` qubits.
+
+    Note:
+        Requires `qiskit_finance`. The distribution is centered at `num_qubits/2`
+        when `mu=0`.
+    """
     mu = args['mu']  # Can be changed as needed NOTE: qiskit NormalDistribution centers the dist at num_qubits/2 when mu=0
     sigma = args['sigma'] # Can be changed as needed
 
@@ -31,6 +49,21 @@ def make_normal_distribution_circuit(args:dict) -> QuantumCircuit:
     return qc
 
 def make_variational_distribution_circuit(args:dict) -> QuantumCircuit:
+    """Build a variational (trainable) circuit for encoding a probability distribution.
+
+    Constructs an ansatz of alternating RY rotation layers and CNOT entanglers.
+    The rotation angles are trainable parameters that can be optimized to
+    approximate an arbitrary target distribution.
+
+    Args:
+        args: Dictionary with keys:
+            `n_y` (int): number of qubits.
+            `variational_angles` (list[float]): flat list of RY angles,
+                length must equal `depth * n_y`.
+
+    Returns:
+        QuantumCircuit with depth = `len(variational_angles) // n_y` layers.
+    """
 
     qc = QuantumCircuit(args['n_y'])
     
