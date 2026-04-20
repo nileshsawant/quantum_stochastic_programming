@@ -96,6 +96,39 @@ pip install qiskit>=2.0 qiskit-aer qiskit-algorithms matplotlib scipy numpy
 
 ---
 
+## Running the Code
+
+### Start here (active implementation)
+
+**`qiskit_impl/qae_example.ipynb`** — the main end-to-end notebook. Walks through the full algorithm (DQA + QAE) using the current `qiskit_impl/` codebase. Run this first.
+
+```bash
+cd qiskit_impl
+jupyter notebook qae_example.ipynb
+```
+
+### Legacy / reference notebooks (original paper)
+
+These are in `QuantumExpectedValueFunctionProject/` and use an older Qiskit API (may need import fixes):
+
+| Notebook | Purpose |
+|---|---|
+| `four_binary_turbines_uniform_distribution_tutorial.ipynb` | Step-by-step tutorial: 4 turbines, uniform wind distribution |
+| `ExpValFun_QAOA_QAE_computations.ipynb` | Reproduces the numerical results from the paper |
+| `ExpValFun_QAOA_QAE_figures.ipynb` | Generates the paper's figures from saved computation data |
+| `simple_UC_model.ipynb` | Minimal classical unit commitment reference |
+| `SED_classical_solution.ipynb` | Classical SED (stochastic economic dispatch) baseline |
+
+### Convergence experiment (script)
+
+```bash
+cd QuantumExpectedValueFunctionProject
+python experiment_convergence.py
+```
+Runs DQA convergence sweeps over annealing depth and time steps, producing the data behind Fig. 3 of the paper.
+
+---
+
 ## Navigation
 
 - **[Algorithm Overview](algorithm.md)** — How DQA and QAE work step by step
