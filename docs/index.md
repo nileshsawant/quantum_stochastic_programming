@@ -36,17 +36,44 @@ Two implementations exist:
 from qiskit_impl.binary_optimizer import BinaryNestedOptimizer
 import numpy as np
 
-pdf = {(0,0):0.25, (0,1):0.25, (1,0):0.25, (1,1):0.25}
-bno = BinaryNestedOptimizer([0.4], [0.05, 0.10], 1.0, pdf, demand=1, is_uniform=True)
+# Problem: 2 wind turbines, total demand = 2 MW (both turbines needed).
+# Each turbine produces exactly 1 MW when ON and wind is available.
+# The algorithm decides: which turbines to commit (y) given a gas backup (x)?
 
-# Classical reference
+# Probability distribution over wind scenarios: keys are (ξ_0, ξ_1) binary tuples.
+# ξ_j = 1: wind is blowing for turbine j (it can generate); ξ_j = 0: no wind.
+pdf = {(0,0): 0.25,   # no wind for either turbine
+       (0,1): 0.25,   # wind only for turbine 1
+       (1,0): 0.25,   # wind only for turbine 0
+       (1,1): 0.25}   # wind available for both turbines
+
+bno = BinaryNestedOptimizer(
+    [0.4],            # gas_costs:     cost of committing the gas generator ($/MW)
+                      #                 1 gas generator here; it can cover 0, 1, or 2 MW.
+    [0.05, 0.10],     # wind_costs:    dispatch cost per turbine when wind is available ($/MWh)
+                      #                 turbine 0 = $0.05/MWh (cheaper), turbine 1 = $0.10/MWh
+    1.0,              # recourse_cost: penalty per MW of unmet demand (expensive backup) ($/MWh)
+    pdf,              # pdf:           scenario probability distribution (must sum to 1.0)
+    demand=2,         # demand:        total MW that must be covered each period
+    is_uniform=True,  # is_uniform:    if True, override pdf weights with uniform 1/N
+)
+# With demand=2: each scenario dispatches both turbines (y=[1,1]).
+# If wind fails for one (ξ_j=0), that turbine produces 0 MW → recourse covers the gap.
+# Tradeoff: commit gas (certain but costly at $0.40) vs rely on wind (cheap but uncertain).
+
+# Classical reference: brute-force enumeration of all (x, y, ξ) combinations
 ev_true = bno.brute_force_wind_demand_expectation_values()
 print("Classical optimal:", ev_true)
 
-# DQA estimate
-qc = bno.adiabatic_evolution_circuit(wind_demand=1, time=100, time_steps=4, norm=10)
-counts = bno.execute_optimizer(qc, num_meas=4096)
-ev_dqa = bno.process_expectation_value_optimizer(wind_demand=1, counts=counts)
+# DQA estimate: quantum annealing circuit with 4 Trotter steps, 100 annealing time
+qc = bno.adiabatic_evolution_circuit(
+    wind_demand=2,    # wind_demand: how many MW the wind turbines are expected to cover
+    time=100,         # time:        total annealing time T (longer → closer to ground state)
+    time_steps=4,     # time_steps:  number of Trotter steps p (circuit depth ∝ p)
+    norm=10,          # norm:        normalization factor for Hamiltonian coefficients
+)
+counts = bno.execute_optimizer(qc, num_meas=4096)   # 4096 measurement shots
+ev_dqa = bno.process_expectation_value_optimizer(wind_demand=2, counts=counts)
 print("DQA estimate:", ev_dqa)
 ```
 
