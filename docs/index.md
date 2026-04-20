@@ -61,20 +61,32 @@ bno = BinaryNestedOptimizer(
 # If wind fails for one (ξ_j=0), that turbine produces 0 MW → recourse covers the gap.
 # Tradeoff: commit gas (certain but costly at $0.40) vs rely on wind (cheap but uncertain).
 
-# Classical reference: brute-force enumeration of all (x, y, ξ) combinations
+# --- Step 1: Classical brute-force reference ---
+# Computes φ(x) = E_ξ[min_y q(y,ξ)] for ALL values of x (0, 1, 2).
+# Returns a dict/array indexed by x: ev_true[x] = expected second-stage cost when gas covers x MW.
 ev_true = bno.brute_force_wind_demand_expectation_values()
-print("Classical optimal:", ev_true)
+print("Classical φ(x) for all x:", ev_true)
+# Total cost for each x: c_x * x + φ(x) = 0.4*x + ev_true[x]  → pick x with minimum total cost.
 
-# DQA estimate: quantum annealing circuit with 4 Trotter steps, 100 annealing time
+# --- Step 2: DQA quantum estimate of φ(x) for one specific x ---
+#
+# 'wind_demand' is the MW the wind turbines must cover = demand - x.
+# It encodes the first-stage decision x implicitly:
+#   wind_demand=2  →  x=0  (gas off, wind covers all 2 MW)
+#   wind_demand=1  →  x=1  (gas covers 1 MW, wind covers the remaining 1 MW)
+#   wind_demand=0  →  x=2  (gas covers everything, no wind needed)
+#
+# To find the optimal x, run the circuit once per candidate and pick min 0.4*x + φ̃(x).
+# Here we evaluate x=0 (wind_demand=2) as an example.
 qc = bno.adiabatic_evolution_circuit(
-    wind_demand=2,    # wind_demand: how many MW the wind turbines are expected to cover
-    time=100,         # time:        total annealing time T (longer → closer to ground state)
-    time_steps=4,     # time_steps:  number of Trotter steps p (circuit depth ∝ p)
-    norm=10,          # norm:        normalization factor for Hamiltonian coefficients
+    wind_demand=2,    # encodes x=0: wind turbines must cover all 2 MW of demand
+    time=100,         # total annealing time T (longer → closer to ground state)
+    time_steps=4,     # number of Trotter steps p (circuit depth ∝ p)
+    norm=10,          # normalization factor for Hamiltonian coefficients
 )
-counts = bno.execute_optimizer(qc, num_meas=4096)   # 4096 measurement shots
+counts = bno.execute_optimizer(qc, num_meas=4096)
 ev_dqa = bno.process_expectation_value_optimizer(wind_demand=2, counts=counts)
-print("DQA estimate:", ev_dqa)
+print(f"DQA estimate of φ(x=0):  {ev_dqa:.4f}  (classical: {ev_true[0]:.4f})")
 ```
 
 ---
