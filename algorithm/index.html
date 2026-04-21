@@ -1014,6 +1014,7 @@
 - 2 wind turbines, demand = 2 MW
 - <code>gas_costs = [0.4]</code>, <code>wind_costs = [0.05, 0.10]</code>, <code>recourse_cost = 1.0</code>
 - 4 equally-likely wind scenarios: <code>(0,0)</code>, <code>(0,1)</code>, <code>(1,0)</code>, <code>(1,1)</code> each with probability 0.25</p>
+<p>The <strong>running example</strong> throughout the DQA, Oracle, and QAE sections uses <strong><span class="arithmatex">\(x=1\)</span></strong> (<code>wind_demand=1</code>) — the optimal first-stage decision where gas covers 1 MW and wind covers the remaining 1 MW. This is the most instructive case because the Dicke state is a genuine superposition and DQA has something meaningful to do.</p>
 <hr />
 <h2 id="two-stage-stochastic-optimization">Two-Stage Stochastic Optimization<a class="headerlink" href="#two-stage-stochastic-optimization" title="Permanent link">&para;</a></h2>
 <p>The problem has two decisions made at different times:</p>
@@ -1179,19 +1180,22 @@ With <code>wind_demand=1</code>, only one turbine is dispatched at a time (<code
 <p><strong>What is a quantum state here?</strong>
 The quantum computer holds a superposition over all possible turbine dispatch decisions <span class="arithmatex">\(y\)</span>. Each basis state <span class="arithmatex">\(|y\rangle|\xi\rangle\)</span> represents one specific dispatch <span class="arithmatex">\(y\)</span> under one specific wind scenario <span class="arithmatex">\(\xi\)</span>, and has a complex amplitude (probability weight).</p>
 <p><strong>Initialization — Dicke state <span class="arithmatex">\(|D_n^k\rangle\)</span></strong></p>
-<p>Start with a <em>uniform</em> superposition over all feasible dispatches (those satisfying <span class="arithmatex">\(\sum y_j = k\)</span>, where <span class="arithmatex">\(k = \text{wind\_demand}\)</span>). With <span class="arithmatex">\(k=2\)</span> (both turbines needed), there is only one feasible dispatch: <span class="arithmatex">\(y = [1,1]\)</span>. The wind scenarios are loaded with amplitudes proportional to <span class="arithmatex">\(\sqrt{\Pr[\xi]}\)</span>.</p>
-<p>With our uniform distribution, the initial state is:</p>
-<div class="arithmatex">\[|D_2^2\rangle \otimes |\text{pdf}\rangle = |11\rangle \otimes \frac{1}{2}\!\left(|00\rangle + |01\rangle + |10\rangle + |11\rangle\right)\]</div>
-<p>Each of the 4 terms has equal amplitude <span class="arithmatex">\(\frac{1}{2}\)</span>, so each scenario is equally likely.</p>
+<p>Start with a <em>uniform</em> superposition over all feasible dispatches (those satisfying <span class="arithmatex">\(\sum y_j = k\)</span>, where <span class="arithmatex">\(k = \text{wind\_demand}\)</span>). With <span class="arithmatex">\(x=1\)</span>, <code>wind_demand=1</code> so <span class="arithmatex">\(k=1\)</span> — exactly one of the two turbines must be dispatched. There are two feasible dispatches: <span class="arithmatex">\(y=[1,0]\)</span> (turbine 0 on) and <span class="arithmatex">\(y=[0,1]\)</span> (turbine 1 on). The wind scenarios are loaded with amplitudes proportional to <span class="arithmatex">\(\sqrt{\Pr[\xi]}\)</span>.</p>
+<p>With our uniform distribution, the initial state for <span class="arithmatex">\(x=1\)</span> is:</p>
+<div class="arithmatex">\[|D_2^1\rangle \otimes |\text{pdf}\rangle = \frac{1}{\sqrt{2}}\!\left(|10\rangle + |01\rangle\right) \otimes \frac{1}{2}\!\left(|00\rangle + |01\rangle + |10\rangle + |11\rangle\right)\]</div>
+<p>This expands to 8 equally-weighted basis states — every combination of which turbine is dispatched and which wind scenario occurs. The DQA circuit's job is to shift amplitude away from high-cost states (e.g. <span class="arithmatex">\(|10\rangle|00\rangle\)</span>: turbine 0 on but no wind — recourse cost $1.00) and toward low-cost states (e.g. <span class="arithmatex">\(|10\rangle|10\rangle\)</span>: turbine 0 on and wind blows — cost $0.05).</p>
+<blockquote>
+<p><strong>Compare with <span class="arithmatex">\(x=0\)</span></strong> (<code>wind_demand=2</code>, <span class="arithmatex">\(k=2\)</span>): the only feasible dispatch is <span class="arithmatex">\(y=[1,1]\)</span>, so the Dicke state is just <span class="arithmatex">\(|11\rangle\)</span> — a single basis state with no superposition. The mixer has nothing to mix. This is why <span class="arithmatex">\(x=1\)</span> is the more instructive example: DQA is actually <em>doing something</em>.</p>
+</blockquote>
 <p><strong>Annealing — alternating cost and mixer layers</strong></p>
 <p>The circuit applies <span class="arithmatex">\(T\)</span> Trotter steps. At step <span class="arithmatex">\(t\)</span> out of <span class="arithmatex">\(T\)</span>, the schedule parameter is <span class="arithmatex">\(s_t = t/T\)</span> (goes from 0 to 1):</p>
 <div class="arithmatex">\[U_{\text{DQA}}(T) = \underbrace{U_q(s_{T-1}) \cdot U_d(1-s_{T-1})}_{\text{last step, mostly cost}} \cdots \underbrace{U_q(s_0) \cdot U_d(1-s_0)}_{\text{first step, mostly mixing}}\]</div>
 <ul>
 <li><strong><span class="arithmatex">\(U_q(\gamma)\)</span> — cost operator</strong>: adds a phase <span class="arithmatex">\(e^{-i\gamma \cdot q(y,\xi)}\)</span> to each basis state proportional to its cost. States with <em>lower</em> cost accumulate <em>less</em> phase → they are relatively amplified over many steps.</li>
 </ul>
-<p><em>Concretely</em>: state <span class="arithmatex">\(|11\rangle|11\rangle\)</span> (both turbines dispatch, both have wind, cost $0.15) gets a small phase; state <span class="arithmatex">\(|11\rangle|00\rangle\)</span> (both dispatch, no wind, cost $2.00) gets a large phase.</p>
+<p><em>Concretely for <span class="arithmatex">\(x=1\)</span></em>: state <span class="arithmatex">\(|10\rangle|10\rangle\)</span> (turbine 0 on, wind blows, cost $0.05) gets a tiny phase; state <span class="arithmatex">\(|10\rangle|00\rangle\)</span> (turbine 0 on, no wind, cost $1.00) gets a large phase.</p>
 <ul>
-<li><strong><span class="arithmatex">\(U_d(\beta)\)</span> — XY mixer</strong>: swaps amplitude between different dispatch decisions while keeping <span class="arithmatex">\(\sum y_j = k\)</span> fixed (the demand constraint is never violated). Early in annealing (<span class="arithmatex">\(s_t \approx 0\)</span>), mixing is strong so the state explores broadly. Late in annealing (<span class="arithmatex">\(s_t \approx 1\)</span>), the cost operator dominates and the state concentrates on low-cost solutions.</li>
+<li><strong><span class="arithmatex">\(U_d(\beta)\)</span> — XY mixer</strong>: swaps amplitude between <span class="arithmatex">\(|10\rangle\)</span> (turbine 0) and <span class="arithmatex">\(|01\rangle\)</span> (turbine 1) while keeping <span class="arithmatex">\(\sum y_j = 1\)</span> fixed. Early in annealing, mixing is strong — both turbines are equally likely. Late in annealing, the cost operator dominates and the state concentrates on turbine 0 (cheaper at $0.05 vs $0.10) for scenarios where wind is available.</li>
 </ul>
 <p><strong>Output</strong></p>
 <p>After <span class="arithmatex">\(T\)</span> steps, the state <span class="arithmatex">\(|\tilde{\psi}_x^*\rangle\)</span> has most amplitude on low-cost <span class="arithmatex">\((y, \xi)\)</span> pairs. Its expected energy is:</p>
@@ -1204,13 +1208,18 @@ The quantum computer holds a superposition over all possible turbine dispatch de
 <div class="arithmatex">\[\mathcal{F}|y\rangle|\xi\rangle\underbrace{|0\rangle}_\text{ancilla} \;\longrightarrow\; |y\rangle|\xi\rangle\!\left(\sqrt{1-\bar{q}}\,|0\rangle + \sqrt{\bar{q}}\,|1\rangle\right)\]</div>
 <p>where <span class="arithmatex">\(\bar{q} = q(y,\xi) / q_{\max} \in [0,1]\)</span> is the normalized cost. After the oracle:</p>
 <div class="arithmatex">\[\Pr[\text{ancilla} = |1\rangle] = \bar{q}\]</div>
-<p><strong>Concrete example</strong> with <span class="arithmatex">\(q_{\max} = 3.0\)</span>:</p>
-<p>| State <span class="arithmatex">\(|y\rangle|\xi\rangle\)</span> | Cost <span class="arithmatex">\(q\)</span> | <span class="arithmatex">\(\bar{q} = q/3\)</span> | Ancilla rotation angle <span class="arithmatex">\(2\arcsin(\sqrt{\bar{q}})\)</span> |
-|------------------------------|----------|-----------------|---------------------------------------------------|
-| <span class="arithmatex">\(|11\rangle|11\rangle\)</span>        | $0.15   | 0.050           | 0.45 rad |
-| <span class="arithmatex">\(|11\rangle|10\rangle\)</span>        | $1.05   | 0.350           | 1.28 rad |
-| <span class="arithmatex">\(|11\rangle|01\rangle\)</span>        | $1.10   | 0.367           | 1.31 rad |
-| <span class="arithmatex">\(|11\rangle|00\rangle\)</span>        | $2.00   | 0.667           | 1.91 rad |</p>
+<p><strong>Concrete example</strong> with <span class="arithmatex">\(x=1\)</span>, <code>wind_demand=1</code>, <span class="arithmatex">\(q_{\max} = 3.0\)</span>.
+All 8 basis states in the <span class="arithmatex">\(x=1\)</span> initial superposition, with their oracle rotation angles:</p>
+<p>| State <span class="arithmatex">\(|y\rangle|\xi\rangle\)</span> | Meaning | Cost <span class="arithmatex">\(q\)</span> | <span class="arithmatex">\(\bar{q} = q/3\)</span> | Ancilla angle <span class="arithmatex">\(2\arcsin(\sqrt{\bar{q}})\)</span> |
+|------------------------------|---------|----------|-----------------|------------------------------------------|
+| <span class="arithmatex">\(|10\rangle|00\rangle\)</span> | turbine 0 on, no wind → full recourse | $1.00 | 0.3333 | 1.23 rad |
+| <span class="arithmatex">\(|10\rangle|10\rangle\)</span> | turbine 0 on, wind blows → cheap! | $0.05 | 0.0167 | 0.26 rad |
+| <span class="arithmatex">\(|10\rangle|11\rangle\)</span> | turbine 0 on, wind blows → cheap! | $0.05 | 0.0167 | 0.26 rad |
+| <span class="arithmatex">\(|10\rangle|01\rangle\)</span> | turbine 0 on, no wind → full recourse | $1.00 | 0.3333 | 1.23 rad |
+| <span class="arithmatex">\(|01\rangle|01\rangle\)</span> | turbine 1 on, wind blows | $0.10 | 0.0333 | 0.37 rad |
+| <span class="arithmatex">\(|01\rangle|11\rangle\)</span> | turbine 1 on, wind blows | $0.10 | 0.0333 | 0.37 rad |
+| <span class="arithmatex">\(|01\rangle|00\rangle\)</span> | turbine 1 on, no wind → full recourse | $1.00 | 0.3333 | 1.23 rad |
+| <span class="arithmatex">\(|01\rangle|10\rangle\)</span> | turbine 1 on, no wind → full recourse | $1.00 | 0.3333 | 1.23 rad |</p>
 <p>After <span class="arithmatex">\(\mathcal{F}\)</span> acts on the full superposition, the <em>average</em> probability of ancilla = <span class="arithmatex">\(|1\rangle\)</span> equals <span class="arithmatex">\(\mathbb{E}[\bar{q}] = \phi(x)/q_{\max}\)</span> — the normalised expected cost. This is the number QAE will estimate.</p>
 <p><strong>Two oracle variants:</strong></p>
 <table>
@@ -1262,11 +1271,13 @@ The quantum computer holds a superposition over all possible turbine dispatch de
 <li>Measure b → compute the answer:</li>
 </ol>
 <div class="arithmatex">\[\tilde{a} = \sin^2\!\left(\frac{b \cdot \pi}{2^m}\right) \qquad \tilde{\phi}(x) = \tilde{a} \cdot q_{\max}\]</div>
-<p><strong>Concrete example</strong> with <span class="arithmatex">\(m = 3\)</span> estimate qubits (<span class="arithmatex">\(2^3 = 8\)</span> possible values of <span class="arithmatex">\(b\)</span>):</p>
-<p>Suppose the true <span class="arithmatex">\(a = 0.358\)</span> (so <span class="arithmatex">\(\phi(0) = 0.358 \times 3.0 = \$1.075\)</span>). Then <span class="arithmatex">\(\theta_a = \arcsin(\sqrt{0.358}) = 0.641\)</span> rad.</p>
-<p>QPE finds <span class="arithmatex">\(b = 2\)</span> (since <span class="arithmatex">\(b \cdot \pi / 8 \approx 0.785\)</span> rad is the closest grid point to <span class="arithmatex">\(\theta_a\)</span>):</p>
-<div class="arithmatex">\[\tilde{a} = \sin^2(2\pi/8) = \sin^2(0.785) = 0.500 \quad \Rightarrow \quad \tilde{\phi}(0) = 0.5 \times 3.0 = \$1.50\]</div>
-<p>With only <span class="arithmatex">\(m=3\)</span> qubits the estimate is rough. With <span class="arithmatex">\(m=5\)</span>: <span class="arithmatex">\(b=7\)</span>, <span class="arithmatex">\(\tilde{a} = \sin^2(7\pi/32) = 0.364\)</span>, <span class="arithmatex">\(\tilde{\phi}(0) = \$1.09\)</span> — much closer.</p>
+<p><strong>Concrete example</strong> with <span class="arithmatex">\(x=1\)</span>, <span class="arithmatex">\(m = 3\)</span> estimate qubits (<span class="arithmatex">\(2^3 = 8\)</span> possible values of <span class="arithmatex">\(b\)</span>):</p>
+<p>The true value is <span class="arithmatex">\(\phi(1) = \$0.30\)</span>, so <span class="arithmatex">\(a = 0.30/3.0 = 0.10\)</span> and <span class="arithmatex">\(\theta_a = \arcsin(\sqrt{0.10}) = 0.322\)</span> rad.</p>
+<p>With <span class="arithmatex">\(m=3\)</span>: QPE finds <span class="arithmatex">\(b=1\)</span> (since <span class="arithmatex">\(1 \cdot \pi/8 = 0.393\)</span> rad is the closest grid point to <span class="arithmatex">\(\theta_a = 0.322\)</span>):
+$<span class="arithmatex">\(\tilde{a} = \sin^2(\pi/8) = 0.146 \quad \Rightarrow \quad \tilde{\phi}(1) = 0.146 \times 3.0 = \$0.44\)</span>$</p>
+<p>With <span class="arithmatex">\(m=5\)</span> (32 grid points): QPE finds <span class="arithmatex">\(b=3\)</span> (<span class="arithmatex">\(3\pi/32 = 0.295\)</span> rad, closer to 0.322):
+$<span class="arithmatex">\(\tilde{a} = \sin^2(3\pi/32) = 0.084 \quad \Rightarrow \quad \tilde{\phi}(1) = 0.084 \times 3.0 = \$0.25\)</span>$</p>
+<p>Both estimates bracket the true $0.30 and get tighter as <span class="arithmatex">\(m\)</span> increases. More QPE qubits = finer angle grid = more accurate estimate.</p>
 <p><strong>Why QAE beats Monte Carlo:</strong></p>
 <table>
 <thead>
