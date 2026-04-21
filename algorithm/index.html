@@ -1094,6 +1094,84 @@ With <code>gas_costs = [0.4]</code> and <code>demand = 2</code>:</p>
 <div class="arithmatex">\[\min_x \left[ c_x \cdot x + \underbrace{\mathbb{E}_\xi\!\left[\min_y\, q(x,y,\xi)\right]}_{\phi(x)} \right]\]</div>
 <p>For <span class="arithmatex">\(x = 0\)</span>: <span class="arithmatex">\(\phi(0) = 0.25 \times (2.00 + 1.10 + 1.05 + 0.15) = 0.25 \times 4.30 = \$1.075\)</span></p>
 <p>Total cost for <span class="arithmatex">\(x=0\)</span>: <span class="arithmatex">\(0 + 1.075 = \$1.075\)</span></p>
+<p><strong>Now compare <span class="arithmatex">\(x=1\)</span></strong> (gas covers 1 MW, wind must cover the remaining 1 MW).
+With <code>wind_demand=1</code>, only one turbine is dispatched at a time (<code>sum(y)=1</code>). The optimizer picks whichever turbine has wind and is cheaper:</p>
+<table>
+<thead>
+<tr>
+<th>Scenario <span class="arithmatex">\(\xi\)</span></th>
+<th>Best dispatch <span class="arithmatex">\(y^*\)</span></th>
+<th>Wind output</th>
+<th>Shortfall <span class="arithmatex">\(r\)</span></th>
+<th>Second-stage cost <span class="arithmatex">\(q\)</span></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>(0,0)</code> — no wind</td>
+<td><code>[1,0]</code> (either works, same cost)</td>
+<td>0 MW</td>
+<td>1 MW</td>
+<td><span class="arithmatex">\(0.05 \times 0 + 1.0 \times 1 = \$1.00\)</span></td>
+</tr>
+<tr>
+<td><code>(0,1)</code> — turbine 1 only</td>
+<td><code>[0,1]</code> (use turbine 1)</td>
+<td>1 MW</td>
+<td>0 MW</td>
+<td><span class="arithmatex">\(0.10 \times 1 = \$0.10\)</span></td>
+</tr>
+<tr>
+<td><code>(1,0)</code> — turbine 0 only</td>
+<td><code>[1,0]</code> (use turbine 0, cheaper!)</td>
+<td>1 MW</td>
+<td>0 MW</td>
+<td><span class="arithmatex">\(0.05 \times 1 = \$0.05\)</span></td>
+</tr>
+<tr>
+<td><code>(1,1)</code> — both turbines</td>
+<td><code>[1,0]</code> (turbine 0 cheaper)</td>
+<td>1 MW</td>
+<td>0 MW</td>
+<td><span class="arithmatex">\(0.05 \times 1 = \$0.05\)</span></td>
+</tr>
+</tbody>
+</table>
+<p><span class="arithmatex">\(\phi(1) = 0.25 \times (1.00 + 0.10 + 0.05 + 0.05) = 0.25 \times 1.20 = \$0.30\)</span></p>
+<p>Total cost for <span class="arithmatex">\(x=1\)</span>: <span class="arithmatex">\(0.40 \times 1 + 0.30 = \$0.70\)</span> ← <strong>cheaper than <span class="arithmatex">\(x=0\)</span>!</strong></p>
+<p><strong>And <span class="arithmatex">\(x=2\)</span></strong> (gas covers everything, no wind needed): <span class="arithmatex">\(\phi(2) = \$0.00\)</span> but gas cost is <span class="arithmatex">\(0.40 \times 2 = \$0.80\)</span>.</p>
+<p><strong>Summary — the optimization result:</strong></p>
+<table>
+<thead>
+<tr>
+<th><span class="arithmatex">\(x\)</span> (gas MW)</th>
+<th>Gas cost</th>
+<th><span class="arithmatex">\(\phi(x)\)</span> (wind+recourse)</th>
+<th>Total cost</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>$0.00</td>
+<td>$1.075</td>
+<td>$1.075</td>
+</tr>
+<tr>
+<td><strong>1</strong></td>
+<td><strong>$0.40</strong></td>
+<td><strong>$0.300</strong></td>
+<td><strong>$0.700 ← optimal</strong></td>
+</tr>
+<tr>
+<td>2</td>
+<td>$0.80</td>
+<td>$0.000</td>
+<td>$0.800</td>
+</tr>
+</tbody>
+</table>
+<p>The surprise: committing <em>some</em> gas (<span class="arithmatex">\(x=1\)</span>) and relying on wind for the rest is cheaper than either full wind (<span class="arithmatex">\(x=0\)</span>, too much recourse risk) or full gas (<span class="arithmatex">\(x=2\)</span>, too expensive). This is the core insight the quantum algorithm is designed to find efficiently by computing <span class="arithmatex">\(\phi(x)\)</span> for each <span class="arithmatex">\(x\)</span>.</p>
 <p>The algorithm must compute <span class="arithmatex">\(\phi(x)\)</span> for each candidate <span class="arithmatex">\(x\)</span> — this is the hard part, because the <span class="arithmatex">\(\min\)</span> over <span class="arithmatex">\(y\)</span> is <em>inside</em> the expectation over <span class="arithmatex">\(\xi\)</span>. Every scenario needs its own optimal dispatch, and classical Monte Carlo needs <span class="arithmatex">\(O(1/\epsilon^2)\)</span> samples to estimate this accurately.</p>
 <hr />
 <h2 id="step-1-dqa-discrete-quantum-annealing">Step 1: DQA — Discrete Quantum Annealing<a class="headerlink" href="#step-1-dqa-discrete-quantum-annealing" title="Permanent link">&para;</a></h2>
