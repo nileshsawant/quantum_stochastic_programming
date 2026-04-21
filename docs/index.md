@@ -67,27 +67,31 @@ bno = BinaryNestedOptimizer(
 ev_true = bno.brute_force_wind_demand_expectation_values()
 print("Classical φ(x) for all x:", ev_true)
 # Total cost for each x: c_x * x + φ(x) = 0.4*x + ev_true[x]  → pick x with minimum total cost.
+# x=0: $0.00 + $1.075 = $1.075
+# x=1: $0.40 + $0.300 = $0.700  ← optimal
+# x=2: $0.80 + $0.000 = $0.800
 
 # --- Step 2: DQA quantum estimate of φ(x) for one specific x ---
 #
 # 'wind_demand' is the MW the wind turbines must cover = demand - x.
 # It encodes the first-stage decision x implicitly:
 #   wind_demand=2  →  x=0  (gas off, wind covers all 2 MW)
-#   wind_demand=1  →  x=1  (gas covers 1 MW, wind covers the remaining 1 MW)
+#   wind_demand=1  →  x=1  (gas covers 1 MW, wind covers the remaining 1 MW)  ← optimal
 #   wind_demand=0  →  x=2  (gas covers everything, no wind needed)
 #
-# To find the optimal x, run the circuit once per candidate and pick min 0.4*x + φ̃(x).
-# Here we evaluate x=0 (wind_demand=2) as an example.
-# (Spoiler: x=1 is optimal for this problem — see the Algorithm Overview for the full comparison.)
+# We evaluate x=1 (wind_demand=1) — the optimal decision.
+# With wind_demand=1, the Dicke state is a superposition of two turbine choices:
+#   (1/√2)(|10⟩ + |01⟩)  — turbine 0 on OR turbine 1 on
+# DQA annealing shifts amplitude toward turbine 0 (cheaper at $0.05 vs $0.10).
 qc = bno.adiabatic_evolution_circuit(
-    wind_demand=2,    # encodes x=0: wind turbines must cover all 2 MW of demand
+    wind_demand=1,    # encodes x=1: gas covers 1 MW, wind turbines cover remaining 1 MW
     time=100,         # total annealing time T (longer → closer to ground state)
     time_steps=4,     # number of Trotter steps p (circuit depth ∝ p)
     norm=10,          # normalization factor for Hamiltonian coefficients
 )
 counts = bno.execute_optimizer(qc, num_meas=4096)
-ev_dqa = bno.process_expectation_value_optimizer(wind_demand=2, counts=counts)
-print(f"DQA estimate of φ(x=0):  {ev_dqa:.4f}  (classical: {ev_true[0]:.4f})")
+ev_dqa = bno.process_expectation_value_optimizer(wind_demand=1, counts=counts)
+print(f"DQA estimate of φ(x=1):  {ev_dqa:.4f}  (classical: {ev_true[1]:.4f})")
 ```
 
 ---

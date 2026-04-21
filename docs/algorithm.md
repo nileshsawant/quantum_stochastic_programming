@@ -5,6 +5,8 @@ All examples on this page use the same small problem from the [Quick Start](inde
 - `gas_costs = [0.4]`, `wind_costs = [0.05, 0.10]`, `recourse_cost = 1.0`
 - 4 equally-likely wind scenarios: `(0,0)`, `(0,1)`, `(1,0)`, `(1,1)` each with probability 0.25
 
+The **running example** throughout the DQA, Oracle, and QAE sections uses **$x=1$** (`wind_demand=1`) — the optimal first-stage decision where gas covers 1 MW and wind covers the remaining 1 MW. This is the most instructive case because the Dicke state is a genuine superposition and DQA has something meaningful to do.
+
 ---
 
 ## Two-Stage Stochastic Optimization
@@ -82,13 +84,15 @@ The quantum computer holds a superposition over all possible turbine dispatch de
 
 **Initialization — Dicke state $|D_n^k\rangle$**
 
-Start with a *uniform* superposition over all feasible dispatches (those satisfying $\sum y_j = k$, where $k = \text{wind\_demand}$). With $k=2$ (both turbines needed), there is only one feasible dispatch: $y = [1,1]$. The wind scenarios are loaded with amplitudes proportional to $\sqrt{\Pr[\xi]}$.
+Start with a *uniform* superposition over all feasible dispatches (those satisfying $\sum y_j = k$, where $k = \text{wind\_demand}$). With $x=1$, `wind_demand=1` so $k=1$ — exactly one of the two turbines must be dispatched. There are two feasible dispatches: $y=[1,0]$ (turbine 0 on) and $y=[0,1]$ (turbine 1 on). The wind scenarios are loaded with amplitudes proportional to $\sqrt{\Pr[\xi]}$.
 
-With our uniform distribution, the initial state is:
+With our uniform distribution, the initial state for $x=1$ is:
 
-$$|D_2^2\rangle \otimes |\text{pdf}\rangle = |11\rangle \otimes \frac{1}{2}\!\left(|00\rangle + |01\rangle + |10\rangle + |11\rangle\right)$$
+$$|D_2^1\rangle \otimes |\text{pdf}\rangle = \frac{1}{\sqrt{2}}\!\left(|10\rangle + |01\rangle\right) \otimes \frac{1}{2}\!\left(|00\rangle + |01\rangle + |10\rangle + |11\rangle\right)$$
 
-Each of the 4 terms has equal amplitude $\frac{1}{2}$, so each scenario is equally likely.
+This expands to 8 equally-weighted basis states — every combination of which turbine is dispatched and which wind scenario occurs. The DQA circuit's job is to shift amplitude away from high-cost states (e.g. $|10\rangle|00\rangle$: turbine 0 on but no wind — recourse cost \$1.00) and toward low-cost states (e.g. $|10\rangle|10\rangle$: turbine 0 on and wind blows — cost \$0.05).
+
+> **Compare with $x=0$** (`wind_demand=2`, $k=2$): the only feasible dispatch is $y=[1,1]$, so the Dicke state is just $|11\rangle$ — a single basis state with no superposition. The mixer has nothing to mix. This is why $x=1$ is the more instructive example: DQA is actually *doing something*.
 
 **Annealing — alternating cost and mixer layers**
 
@@ -98,9 +102,9 @@ $$U_{\text{DQA}}(T) = \underbrace{U_q(s_{T-1}) \cdot U_d(1-s_{T-1})}_{\text{last
 
 - **$U_q(\gamma)$ — cost operator**: adds a phase $e^{-i\gamma \cdot q(y,\xi)}$ to each basis state proportional to its cost. States with *lower* cost accumulate *less* phase → they are relatively amplified over many steps.
 
-  *Concretely*: state $|11\rangle|11\rangle$ (both turbines dispatch, both have wind, cost \$0.15) gets a small phase; state $|11\rangle|00\rangle$ (both dispatch, no wind, cost \$2.00) gets a large phase.
+  *Concretely for $x=1$*: state $|10\rangle|10\rangle$ (turbine 0 on, wind blows, cost \$0.05) gets a tiny phase; state $|10\rangle|00\rangle$ (turbine 0 on, no wind, cost \$1.00) gets a large phase.
 
-- **$U_d(\beta)$ — XY mixer**: swaps amplitude between different dispatch decisions while keeping $\sum y_j = k$ fixed (the demand constraint is never violated). Early in annealing ($s_t \approx 0$), mixing is strong so the state explores broadly. Late in annealing ($s_t \approx 1$), the cost operator dominates and the state concentrates on low-cost solutions.
+- **$U_d(\beta)$ — XY mixer**: swaps amplitude between $|10\rangle$ (turbine 0) and $|01\rangle$ (turbine 1) while keeping $\sum y_j = 1$ fixed. Early in annealing, mixing is strong — both turbines are equally likely. Late in annealing, the cost operator dominates and the state concentrates on turbine 0 (cheaper at \$0.05 vs \$0.10) for scenarios where wind is available.
 
 **Output**
 
@@ -124,14 +128,19 @@ where $\bar{q} = q(y,\xi) / q_{\max} \in [0,1]$ is the normalized cost. After th
 
 $$\Pr[\text{ancilla} = |1\rangle] = \bar{q}$$
 
-**Concrete example** with $q_{\max} = 3.0$:
+**Concrete example** with $x=1$, `wind_demand=1`, $q_{\max} = 3.0$.
+All 8 basis states in the $x=1$ initial superposition, with their oracle rotation angles:
 
-| State $|y\rangle|\xi\rangle$ | Cost $q$ | $\bar{q} = q/3$ | Ancilla rotation angle $2\arcsin(\sqrt{\bar{q}})$ |
-|------------------------------|----------|-----------------|---------------------------------------------------|
-| $|11\rangle|11\rangle$        | \$0.15   | 0.050           | 0.45 rad |
-| $|11\rangle|10\rangle$        | \$1.05   | 0.350           | 1.28 rad |
-| $|11\rangle|01\rangle$        | \$1.10   | 0.367           | 1.31 rad |
-| $|11\rangle|00\rangle$        | \$2.00   | 0.667           | 1.91 rad |
+| State $|y\rangle|\xi\rangle$ | Meaning | Cost $q$ | $\bar{q} = q/3$ | Ancilla angle $2\arcsin(\sqrt{\bar{q}})$ |
+|------------------------------|---------|----------|-----------------|------------------------------------------|
+| $|10\rangle|00\rangle$ | turbine 0 on, no wind → full recourse | \$1.00 | 0.3333 | 1.23 rad |
+| $|10\rangle|10\rangle$ | turbine 0 on, wind blows → cheap! | \$0.05 | 0.0167 | 0.26 rad |
+| $|10\rangle|11\rangle$ | turbine 0 on, wind blows → cheap! | \$0.05 | 0.0167 | 0.26 rad |
+| $|10\rangle|01\rangle$ | turbine 0 on, no wind → full recourse | \$1.00 | 0.3333 | 1.23 rad |
+| $|01\rangle|01\rangle$ | turbine 1 on, wind blows | \$0.10 | 0.0333 | 0.37 rad |
+| $|01\rangle|11\rangle$ | turbine 1 on, wind blows | \$0.10 | 0.0333 | 0.37 rad |
+| $|01\rangle|00\rangle$ | turbine 1 on, no wind → full recourse | \$1.00 | 0.3333 | 1.23 rad |
+| $|01\rangle|10\rangle$ | turbine 1 on, no wind → full recourse | \$1.00 | 0.3333 | 1.23 rad |
 
 After $\mathcal{F}$ acts on the full superposition, the *average* probability of ancilla = $|1\rangle$ equals $\mathbb{E}[\bar{q}] = \phi(x)/q_{\max}$ — the normalised expected cost. This is the number QAE will estimate.
 
@@ -178,15 +187,17 @@ system qubits  → [ U_DQA ] → [ Oracle F ] ───────────�
 
 $$\tilde{a} = \sin^2\!\left(\frac{b \cdot \pi}{2^m}\right) \qquad \tilde{\phi}(x) = \tilde{a} \cdot q_{\max}$$
 
-**Concrete example** with $m = 3$ estimate qubits ($2^3 = 8$ possible values of $b$):
+**Concrete example** with $x=1$, $m = 3$ estimate qubits ($2^3 = 8$ possible values of $b$):
 
-Suppose the true $a = 0.358$ (so $\phi(0) = 0.358 \times 3.0 = \$1.075$). Then $\theta_a = \arcsin(\sqrt{0.358}) = 0.641$ rad.
+The true value is $\phi(1) = \$0.30$, so $a = 0.30/3.0 = 0.10$ and $\theta_a = \arcsin(\sqrt{0.10}) = 0.322$ rad.
 
-QPE finds $b = 2$ (since $b \cdot \pi / 8 \approx 0.785$ rad is the closest grid point to $\theta_a$):
+With $m=3$: QPE finds $b=1$ (since $1 \cdot \pi/8 = 0.393$ rad is the closest grid point to $\theta_a = 0.322$):
+$$\tilde{a} = \sin^2(\pi/8) = 0.146 \quad \Rightarrow \quad \tilde{\phi}(1) = 0.146 \times 3.0 = \$0.44$$
 
-$$\tilde{a} = \sin^2(2\pi/8) = \sin^2(0.785) = 0.500 \quad \Rightarrow \quad \tilde{\phi}(0) = 0.5 \times 3.0 = \$1.50$$
+With $m=5$ (32 grid points): QPE finds $b=3$ ($3\pi/32 = 0.295$ rad, closer to 0.322):
+$$\tilde{a} = \sin^2(3\pi/32) = 0.084 \quad \Rightarrow \quad \tilde{\phi}(1) = 0.084 \times 3.0 = \$0.25$$
 
-With only $m=3$ qubits the estimate is rough. With $m=5$: $b=7$, $\tilde{a} = \sin^2(7\pi/32) = 0.364$, $\tilde{\phi}(0) = \$1.09$ — much closer.
+Both estimates bracket the true \$0.30 and get tighter as $m$ increases. More QPE qubits = finer angle grid = more accurate estimate.
 
 **Why QAE beats Monte Carlo:**
 

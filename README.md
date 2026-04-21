@@ -431,25 +431,29 @@ bno = BinaryNestedOptimizer(cx, cy, cr, pdf, demand=2, is_uniform=True)
 # 1. Classical brute-force reference: φ(x) for ALL x in {0, 1, 2}
 # ev_true[x] = E_ξ[min_y q(y,ξ)] when gas covers x MW, wind covers (demand-x) MW.
 # Total cost for each x: 0.4*x + ev_true[x] → pick the x with minimum total cost.
+# x=0: $0.00 + $1.075 = $1.075
+# x=1: $0.40 + $0.300 = $0.700  ← optimal
+# x=2: $0.80 + $0.000 = $0.800
 ev_true = bno.brute_force_wind_demand_expectation_values()
 print(f"Classical φ(x) for all x:     {ev_true}")
 
-# 2. DQA quantum estimate of φ(x) for one specific x
+# 2. DQA quantum estimate of φ(x=1) — the optimal first-stage decision
 # 'wind_demand' encodes the first-stage gas decision x implicitly:
 #   wind_demand = demand - x
 #   wind_demand=2 → x=0 (gas off, wind covers all 2 MW)
-#   wind_demand=1 → x=1 (gas covers 1 MW, wind covers 1 MW)
+#   wind_demand=1 → x=1 (gas covers 1 MW, wind covers 1 MW)  ← optimal
 #   wind_demand=0 → x=2 (gas covers everything, no wind needed)
-# Here we evaluate x=0 (wind_demand=2) as an example.
-qc = bno.adiabatic_evolution_circuit(wind_demand=2, time=100, time_steps=4, norm=10)
+# With wind_demand=1, Dicke state = (1/√2)(|10⟩ + |01⟩): turbine 0 or 1 on.
+# DQA shifts amplitude toward turbine 0 (cheaper at $0.05 vs $0.10).
+qc = bno.adiabatic_evolution_circuit(wind_demand=1, time=100, time_steps=4, norm=10)
 counts = bno.execute_optimizer(qc, num_meas=8192)
-exp_val = bno.process_expectation_value_optimizer(wind_demand=2, counts=counts)
-print(f"DQA estimate of φ(x=0):        {exp_val:.4f}  (classical: {ev_true[0]:.4f})")
+exp_val = bno.process_expectation_value_optimizer(wind_demand=1, counts=counts)
+print(f"DQA estimate of φ(x=1):        {exp_val:.4f}  (classical: {ev_true[1]:.4f})")
 
-# 3. Full QAE pipeline (more accurate estimate of φ(x=0))
+# 3. Full QAE pipeline (more accurate estimate of φ(x=1))
 oracle  = bno.single_oracle_sin_inconstraint(c=0.5, norm=10)
 orc_inv = bno.single_oracle_sin_inconstraint(c=0.5, norm=10, inverse=True)
-uopt    = bno.adiabatic_evolution_circuit(wind_demand=2, time=100, time_steps=4, norm=10)
+uopt    = bno.adiabatic_evolution_circuit(wind_demand=1, time=100, time_steps=4, norm=10)
 qae_qc  = bno.canonical_qae(uopt, oracle, m=3, c=0.5, norm=10)
 amplitude = bno.execute_qae(qae_qc, m=3, num_meas=8192)
 print(f"QAE amplitude estimate:        {amplitude:.4f}")
