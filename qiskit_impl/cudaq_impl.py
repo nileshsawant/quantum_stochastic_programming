@@ -177,47 +177,65 @@ def dicke_state_n4_k2(y: cudaq.qview):
     cx(y[0], y[1])
 
 
-# -----------------------------------------------------------------------------
-# Cost operator U_q(gamma) — CP gates encoding second-stage costs as phases
-# Phase kick: e^{i*gamma*c_y/norm} when y[j]=1 AND xi[j]=1 (wind available)
-#             e^{i*gamma*c_r/norm} when y[j]=1 AND xi[j]=0 (recourse)
-# In CUDA-Q: CP(theta) = cr1(theta) (controlled-Phase); equivalent to Qiskit's
-#   qc.cp(theta, ctrl, tgt)
-# Qiskit counterpart: ExpValFun_functions.cost_operator(amplitude, args)
-#   and BinaryNestedOptimizer.cost_operator(amplitude, constraint_amplitude, norm)
-# -----------------------------------------------------------------------------
-@cudaq.kernel
-def cost_operator_n4(gamma: float,
-                     c_y0: float, c_y1: float, c_y2: float, c_y3: float,
-                     c_r: float, cost_norm: float,
-                     y: cudaq.qview, xi: cudaq.qview):
-    """Cost phase operator for n_y=4 turbines.
+# @cudaq.kernel
+# def dicke_state(y: cudaq.qview):
+#     return
 
-    Qiskit counterpart: ExpValFun_functions.cost_operator(amplitude, args)
-    in ExpValFun_functions.py.
-    Qiskit uses qc.cp(amplitude*cost/cost_norm, q_pdf, q_w) for the
-    operational cost and X+CP+X for the recourse cost.
-    CUDA-Q replaces qc.cp(...) with cr1(...) (controlled-Phase gate).
-    """
-    # List construction inside @cudaq.kernel is not supported;
-    # unroll all four turbines explicitly.
+
+# # -----------------------------------------------------------------------------
+# # Cost operator U_q(gamma) — CP gates encoding second-stage costs as phases
+# # Phase kick: e^{i*gamma*c_y/norm} when y[j]=1 AND xi[j]=1 (wind available)
+# #             e^{i*gamma*c_r/norm} when y[j]=1 AND xi[j]=0 (recourse)
+# # In CUDA-Q: CP(theta) = cr1(theta) (controlled-Phase); equivalent to Qiskit's
+# #   qc.cp(theta, ctrl, tgt)
+# # Qiskit counterpart: ExpValFun_functions.cost_operator(amplitude, args)
+# #   and BinaryNestedOptimizer.cost_operator(amplitude, constraint_amplitude, norm)
+# # -----------------------------------------------------------------------------
+# @cudaq.kernel
+# def cost_operator_n4(gamma: float,
+#                      c_y0: float, c_y1: float, c_y2: float, c_y3: float,
+#                      c_r: float, cost_norm: float,
+#                      y: cudaq.qview, xi: cudaq.qview):
+#     """Cost phase operator for n_y=4 turbines.
+
+#     Qiskit counterpart: ExpValFun_functions.cost_operator(amplitude, args)
+#     in ExpValFun_functions.py.
+#     Qiskit uses qc.cp(amplitude*cost/cost_norm, q_pdf, q_w) for the
+#     operational cost and X+CP+X for the recourse cost.
+#     CUDA-Q replaces qc.cp(...) with cr1(...) (controlled-Phase gate).
+#     """
+#     # List construction inside @cudaq.kernel is not supported;
+#     # unroll all four turbines explicitly.
+#     scale = gamma / cost_norm
+#     cr1(c_y0 * scale, xi[0], y[0])
+#     x(xi[0])
+#     cr1(c_r * scale, xi[0], y[0])
+#     x(xi[0])
+#     cr1(c_y1 * scale, xi[1], y[1])
+#     x(xi[1])
+#     cr1(c_r * scale, xi[1], y[1])
+#     x(xi[1])
+#     cr1(c_y2 * scale, xi[2], y[2])
+#     x(xi[2])
+#     cr1(c_r * scale, xi[2], y[2])
+#     x(xi[2])
+#     cr1(c_y3 * scale, xi[3], y[3])
+#     x(xi[3])
+#     cr1(c_r * scale, xi[3], y[3])
+#     x(xi[3])
+
+@cudaq.kernel
+def cost_operator(gamma: float,
+                  c_y :list[float], c_r: float, cost_norm: float,
+                  y: cudaq.qview, xi: cudaq.qview):
     scale = gamma / cost_norm
-    cr1(c_y0 * scale, xi[0], y[0])
-    x(xi[0])
-    cr1(c_r * scale, xi[0], y[0])
-    x(xi[0])
-    cr1(c_y1 * scale, xi[1], y[1])
-    x(xi[1])
-    cr1(c_r * scale, xi[1], y[1])
-    x(xi[1])
-    cr1(c_y2 * scale, xi[2], y[2])
-    x(xi[2])
-    cr1(c_r * scale, xi[2], y[2])
-    x(xi[2])
-    cr1(c_y3 * scale, xi[3], y[3])
-    x(xi[3])
-    cr1(c_r * scale, xi[3], y[3])
-    x(xi[3])
+    for k in range(len(y)):
+        cr1(c_y[k] * scale, xi[k], y[k])
+        x(xi[k])
+        cr1(c_r * scale, xi[k], y[k])
+        x(xi[k])
+    ## end for
+    return
 
 
 # -----------------------------------------------------------------------------
@@ -262,114 +280,157 @@ def fswap_power(beta: float, q0: cudaq.qubit, q1: cudaq.qubit):
     rx(-math.pi / 2.0, q1)
 
 
-# Qiskit counterpart: the outer loop in demand_constraint_preserving_mixer()
-#   for qj in args['y_reg']: for qk in args['y_reg'][qj+1:]: SwapGate().power(...)
-@cudaq.kernel
-def mixer_n4(beta: float, y: cudaq.qview):
-    """XY mixer for n_y=4: applies partial SWAP to all pairs (j, k).
+# # Qiskit counterpart: the outer loop in demand_constraint_preserving_mixer()
+# #   for qj in args['y_reg']: for qk in args['y_reg'][qj+1:]: SwapGate().power(...)
+# @cudaq.kernel
+# def mixer_n4(beta: float, y: cudaq.qview):
+#     """XY mixer for n_y=4: applies partial SWAP to all pairs (j, k).
 
-    Qiskit counterpart: ExpValFun_functions.demand_constraint_preserving_mixer(
-        amplitude, args) — the double loop over y_reg pairs.
-    """
-    for j in range(4):
-        for k in range(j + 1, 4):
+#     Qiskit counterpart: ExpValFun_functions.demand_constraint_preserving_mixer(
+#         amplitude, args) — the double loop over y_reg pairs.
+#     """
+#     for j in range(4):
+#         for k in range(j + 1, 4):
+#             fswap_power(beta, y[j], y[k])
+
+
+@cudaq.kernel
+def mixer(beta: float, y: cudaq.qview):
+    for j in range(len(y)):
+        for k in range(j, len(y)):
             fswap_power(beta, y[j], y[k])
+        # end for k
+    # end for j
+    return
 
 
-# -----------------------------------------------------------------------------
-# Oracle F_sin — encodes normalized cost as ancilla rotation amplitude
-# CCRY(theta) rotates ancilla when y[j]=1 AND xi[j]=1 (or xi[j]=0 flipped)
-# Qiskit counterpart: ExpValFun_functions.single_oracle_sin_inconstraint(args)
-#   Qiskit: qc.append(RYGate(theta_cy).control(2), [q, pdf_reg[q], ancilla])
-#           qc.x(pdf_reg[q]); same with theta_cr; qc.x(pdf_reg[q])
-#   CUDA-Q replaces RYGate(...).control(2) with our ccry() kernel.
-# -----------------------------------------------------------------------------
+# # -----------------------------------------------------------------------------
+# # Oracle F_sin — encodes normalized cost as ancilla rotation amplitude
+# # CCRY(theta) rotates ancilla when y[j]=1 AND xi[j]=1 (or xi[j]=0 flipped)
+# # Qiskit counterpart: ExpValFun_functions.single_oracle_sin_inconstraint(args)
+# #   Qiskit: qc.append(RYGate(theta_cy).control(2), [q, pdf_reg[q], ancilla])
+# #           qc.x(pdf_reg[q]); same with theta_cr; qc.x(pdf_reg[q])
+# #   CUDA-Q replaces RYGate(...).control(2) with our ccry() kernel.
+# # -----------------------------------------------------------------------------
+# @cudaq.kernel
+# def oracle_sin_n4(c_y0: float, c_y1: float, c_y2: float, c_y3: float,
+#                   c_r: float, norm: float,
+#                   y: cudaq.qview, xi: cudaq.qview, ancilla: cudaq.qubit):
+#     """F_sin oracle for n_y=4 turbines.
+
+#     Qiskit counterpart: ExpValFun_functions.single_oracle_sin_inconstraint(args)
+#     in ExpValFun_functions.py.
+#     Qiskit appends RYGate(theta).control(2) (i.e., CCRY) for each turbine;
+#     CUDA-Q uses the ccry() kernel defined above as a drop-in replacement.
+#     Gate angles pi*c_y/norm and pi*c_r/norm are identical in both versions.
+
+#     Rotates ancilla qubit by angles proportional to per-turbine costs so that:
+#       Pr[ancilla=|1>] ≈ normalized_expected_cost
+#     """
+#     # List construction inside @cudaq.kernel is not supported;
+#     # unroll all four turbines explicitly.
+#     # scale = pi/norm is a float-float division — valid in kernel scope.
+#     scale = math.pi / norm
+#     # turbine 0
+#     ccry(c_y0 * scale, y[0], xi[0], ancilla)
+#     x(xi[0])
+#     ccry(c_r * scale, y[0], xi[0], ancilla)
+#     x(xi[0])
+#     # turbine 1
+#     ccry(c_y1 * scale, y[1], xi[1], ancilla)
+#     x(xi[1])
+#     ccry(c_r * scale, y[1], xi[1], ancilla)
+#     x(xi[1])
+#     # turbine 2
+#     ccry(c_y2 * scale, y[2], xi[2], ancilla)
+#     x(xi[2])
+#     ccry(c_r * scale, y[2], xi[2], ancilla)
+#     x(xi[2])
+#     # turbine 3
+#     ccry(c_y3 * scale, y[3], xi[3], ancilla)
+#     x(xi[3])
+#     ccry(c_r * scale, y[3], xi[3], ancilla)
+#     x(xi[3])
+
+
 @cudaq.kernel
-def oracle_sin_n4(c_y0: float, c_y1: float, c_y2: float, c_y3: float,
-                  c_r: float, norm: float,
-                  y: cudaq.qview, xi: cudaq.qview, ancilla: cudaq.qubit):
-    """F_sin oracle for n_y=4 turbines.
-
-    Qiskit counterpart: ExpValFun_functions.single_oracle_sin_inconstraint(args)
-    in ExpValFun_functions.py.
-    Qiskit appends RYGate(theta).control(2) (i.e., CCRY) for each turbine;
-    CUDA-Q uses the ccry() kernel defined above as a drop-in replacement.
-    Gate angles pi*c_y/norm and pi*c_r/norm are identical in both versions.
-
-    Rotates ancilla qubit by angles proportional to per-turbine costs so that:
-      Pr[ancilla=|1>] ≈ normalized_expected_cost
-    """
-    # List construction inside @cudaq.kernel is not supported;
-    # unroll all four turbines explicitly.
-    # scale = pi/norm is a float-float division — valid in kernel scope.
+def oracle_sin(c_y: list[float], c_r: float, norm: float,
+               y: cudaq.qview, xi: cudaq.qview, ancilla: cudaq.qubit):
     scale = math.pi / norm
-    # turbine 0
-    ccry(c_y0 * scale, y[0], xi[0], ancilla)
-    x(xi[0])
-    ccry(c_r * scale, y[0], xi[0], ancilla)
-    x(xi[0])
-    # turbine 1
-    ccry(c_y1 * scale, y[1], xi[1], ancilla)
-    x(xi[1])
-    ccry(c_r * scale, y[1], xi[1], ancilla)
-    x(xi[1])
-    # turbine 2
-    ccry(c_y2 * scale, y[2], xi[2], ancilla)
-    x(xi[2])
-    ccry(c_r * scale, y[2], xi[2], ancilla)
-    x(xi[2])
-    # turbine 3
-    ccry(c_y3 * scale, y[3], xi[3], ancilla)
-    x(xi[3])
-    ccry(c_r * scale, y[3], xi[3], ancilla)
-    x(xi[3])
+    for k in range(len(y)):
+        ccry(c_y[k] * scale, y[k], xi[k], ancilla)
+        x(xi[k])
+        ccry(c_r * scale, y[k], xi[k], ancilla)
+        x(xi[k])
+    ## end for
+    return
 
 
-# -----------------------------------------------------------------------------
-# Full DQA ansatz kernel (alternating_operator_ansatz in CUDA-Q)
-# Theta list: [gamma_0, beta_0, gamma_1, beta_1, ...]
-# For 4 timesteps: 8 angles total
-# Qiskit counterpart: ExpValFun_functions.alternating_operator_ansatz(args)
-#   Qiskit builds a QuantumCircuit, appends initial_state_circuit and
-#   pdf_circuit gates, then loops over args['Theta'] alternating between
-#   cost_operator_circuit (even i) and mixer_operator_circuit (odd i).
-#   This kernel does exactly the same sequence using the CUDA-Q primitives above.
-# -----------------------------------------------------------------------------
+# # -----------------------------------------------------------------------------
+# # Full DQA ansatz kernel (alternating_operator_ansatz in CUDA-Q)
+# # Theta list: [gamma_0, beta_0, gamma_1, beta_1, ...]
+# # For 4 timesteps: 8 angles total
+# # Qiskit counterpart: ExpValFun_functions.alternating_operator_ansatz(args)
+# #   Qiskit builds a QuantumCircuit, appends initial_state_circuit and
+# #   pdf_circuit gates, then loops over args['Theta'] alternating between
+# #   cost_operator_circuit (even i) and mixer_operator_circuit (odd i).
+# #   This kernel does exactly the same sequence using the CUDA-Q primitives above.
+# # -----------------------------------------------------------------------------
+# @cudaq.kernel
+# def dqa_ansatz_n4(
+#         c_y0: float, c_y1: float, c_y2: float, c_y3: float,
+#         c_r: float, cost_norm: float,
+#         thetas: list[float],   # [gamma_0, beta_0, gamma_1, beta_1, ...]
+#         n_steps: int):
+#     """DQA alternating operator ansatz for n_y=4, n_xi=4.
+
+#     Qiskit counterpart: ExpValFun_functions.alternating_operator_ansatz(args)
+#     in ExpValFun_functions.py.
+#     Qiskit structure:
+#       qc.append(initial_state_circuit(args).to_gate(), y_reg)   <- dicke_state_n4_k2
+#       qc.append(pdf_circuit(args).to_gate(),          pdf_reg)  <- pdf_init_uniform
+#       for i, theta in enumerate(Theta):
+#           if i % 2 == 0: cost_operator_circuit(theta, args)     <- cost_operator_n4
+#           else:          mixer_operator_circuit(theta, args)     <- mixer_n4
+
+#     Total qubits: n_y + n_xi = 8.
+#     Layout: y[0..3], xi[0..3].
+#     """
+#     qubits = cudaq.qvector(8)
+#     y  = qubits[0:4]
+#     xi = qubits[4:8]
+
+#     # Initial state
+#     dicke_state_n4_k2(y)
+#     pdf_init_uniform(xi)
+
+#     # Alternating layers
+#     for i in range(n_steps * 2):
+#         if i % 2 == 0:
+#             cost_operator_n4(thetas[i], c_y0, c_y1, c_y2, c_y3, c_r, cost_norm,
+#                              y, xi)
+#         else:
+#             mixer_n4(thetas[i], y)
+
+
 @cudaq.kernel
-def dqa_ansatz_n4(
-        c_y0: float, c_y1: float, c_y2: float, c_y3: float,
-        c_r: float, cost_norm: float,
-        thetas: list[float],   # [gamma_0, beta_0, gamma_1, beta_1, ...]
-        n_steps: int):
-    """DQA alternating operator ansatz for n_y=4, n_xi=4.
+def dqa_ansatz(c_y: list[float], c_r: float, cost_norm: float,
+               thetas: list[float],
+               n_steps: int, n_y: int):
+    qubits = cudaq.qvector(2*n_y)
+    y = qubits[0:n_y]
+    xi = qubits[n_y:2*n_y]
 
-    Qiskit counterpart: ExpValFun_functions.alternating_operator_ansatz(args)
-    in ExpValFun_functions.py.
-    Qiskit structure:
-      qc.append(initial_state_circuit(args).to_gate(), y_reg)   <- dicke_state_n4_k2
-      qc.append(pdf_circuit(args).to_gate(),          pdf_reg)  <- pdf_init_uniform
-      for i, theta in enumerate(Theta):
-          if i % 2 == 0: cost_operator_circuit(theta, args)     <- cost_operator_n4
-          else:          mixer_operator_circuit(theta, args)     <- mixer_n4
-
-    Total qubits: n_y + n_xi = 8.
-    Layout: y[0..3], xi[0..3].
-    """
-    qubits = cudaq.qvector(8)
-    y  = qubits[0:4]
-    xi = qubits[4:8]
-
-    # Initial state
     dicke_state_n4_k2(y)
     pdf_init_uniform(xi)
-
-    # Alternating layers
     for i in range(n_steps * 2):
         if i % 2 == 0:
-            cost_operator_n4(thetas[i], c_y0, c_y1, c_y2, c_y3, c_r, cost_norm,
-                             y, xi)
+            cost_operator(thetas[i], c_y, c_r, cost_norm, y, xi)
         else:
-            mixer_n4(thetas[i], y)
+            mixer(thetas[i], y)
+        ## end if
+    ## end for
+    return
 
 
 # =============================================================================
@@ -398,7 +459,7 @@ class CudaqQAEOptimizer:
     """
 
     def __init__(self, c_x: list, c_y: list, c_r: float,
-                 n_y: int = 4, w_d: int = 2, cost_norm: float = 5.0):
+                 n_y: int = 4, n_xi: int = 4, w_d: int = 2, cost_norm: float = 5.0):
         if not _CUDAQ_AVAILABLE:
             raise RuntimeError("cudaq not installed.")
         if n_y != 4:
@@ -422,10 +483,12 @@ class CudaqQAEOptimizer:
         """
         n_steps = len(thetas) // 2
         counts = cudaq.sample(
-            dqa_ansatz_n4,
-            self.c_y[0], self.c_y[1], self.c_y[2], self.c_y[3],
+            # dqa_ansatz_n4,
+            dqa_ansatz,
+            # self.c_y[0], self.c_y[1], self.c_y[2], self.c_y[3],
+            self.c_y,
             self.c_r, self.cost_norm,
-            thetas, n_steps,
+            thetas, n_steps, self.n_y,
             shots_count=shots)
         total = sum(counts.values())
         return {k: v / total for k, v in counts.items()}
