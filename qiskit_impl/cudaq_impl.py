@@ -96,29 +96,48 @@ def scs_3(theta1: float, theta2: float,
     cx(q0, q2)
 
 
-# Cleaner CCRy decomposition used in Dicke state preparation
-# Qiskit counterpart: RYGate().control(2) applied via qc.append()
-#   in both dicke_state_circuit() and single_oracle_sin_inconstraint().
-#   CUDA-Q has no native CCRy gate; use cudaq.control(kernel, [controls], args)
-#   which compiles to a multiply-controlled version of the sub-kernel.
-@cudaq.kernel
-def _ry_gate(theta: float, q: cudaq.qubit):
-    """Single-qubit RY helper — used by ccry via cudaq.control."""
-    ry(theta, q)
+# # Cleaner CCRy decomposition used in Dicke state preparation
+# # Qiskit counterpart: RYGate().control(2) applied via qc.append()
+# #   in both dicke_state_circuit() and single_oracle_sin_inconstraint().
+# #   CUDA-Q has no native CCRy gate; use cudaq.control(kernel, [controls], args)
+# #   which compiles to a multiply-controlled version of the sub-kernel.
+# @cudaq.kernel
+# def _ry_gate(theta: float, q: cudaq.qubit):
+#     """Single-qubit RY helper — used by ccry via cudaq.control."""
+#     ry(theta, q)
 
 
 @cudaq.kernel
 def ccry(theta: float,
          ctrl1: cudaq.qubit, ctrl2: cudaq.qubit, target: cudaq.qubit):
-    """Doubly-controlled RY via cudaq.control (correct for all input states).
+    """Doubly-controlled RY via Barenco et al. decomposition.
 
     Qiskit counterpart: qc.append(RYGate(theta).control(2), [ctrl1, ctrl2, target])
     used in ExpValFun_functions.dicke_state_circuit() and
     single_oracle_sin_inconstraint().
-    Using cudaq.control avoids relative-phase errors from manual decompositions.
-    Ref: CUDA-Q docs — https://nvidia.github.io/cuda-quantum/
+
+    Decomposition (Barenco et al. 1995, V = Ry(theta/2), V^2 = Ry(theta)):
+      CRy(theta/2, ctrl2, target)
+      CX(ctrl1, ctrl2)
+      CRy(-theta/2, ctrl2, target)
+      CX(ctrl1, ctrl2)
+      CRy(theta/2, ctrl1, target)
+
+    Correctness (truth table):
+      ctrl1=0, ctrl2=0 -> I            (all CRy inactive)      ✓
+      ctrl1=0, ctrl2=1 -> Ry(+t/2)·Ry(-t/2) = I               ✓
+      ctrl1=1, ctrl2=0 -> Ry(-t/2)·Ry(+t/2) = I               ✓
+      ctrl1=1, ctrl2=1 -> Ry(+t/2)·Ry(+t/2) = Ry(theta)       ✓
+
+    Using cudaq.control(_ry_gate, [ctrl1, ctrl2], ...) triggers a GPU-backend
+    (cuSVSim) bug when the qubits originate from qview slices of a qvector,
+    producing malformed gate IR with targets(0)/controls(0).
     """
-    cudaq.control(_ry_gate, [ctrl1, ctrl2], theta, target)
+    cry(theta / 2.0, ctrl2, target)
+    cx(ctrl1, ctrl2)
+    cry(-theta / 2.0, ctrl2, target)
+    cx(ctrl1, ctrl2)
+    cry(theta / 2.0, ctrl1, target)
 
 
 # -----------------------------------------------------------------------------
