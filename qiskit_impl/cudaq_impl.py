@@ -496,7 +496,8 @@ def oracle_sin(c_y: list[float], c_r: float, norm: float,
 
 
 @cudaq.kernel
-def dqa_ansatz(c_y: list[float], c_r: float, cost_norm: float, w_d: int,
+def dqa_ansatz(dicke_angles: list[float],
+               c_y: list[float], c_r: float, cost_norm: float, w_d: int,
                thetas: list[float],
                n_steps: int, n_y: int):
     qubits = cudaq.qvector(2*n_y)
@@ -504,9 +505,7 @@ def dqa_ansatz(c_y: list[float], c_r: float, cost_norm: float, w_d: int,
     xi = qubits[n_y:2*n_y]
 
     # dicke_state_n4_k2(y)
-
-    dang = dicke_state_angles(n_y, w_d)
-    dicke_state(n_y, w_d, dang, y)
+    dicke_state(n_y, w_d, dicke_angles, y)
 
     pdf_init_uniform(xi)
     for i in range(n_steps * 2):
@@ -548,14 +547,16 @@ class CudaqQAEOptimizer:
                  n_y: int = 4, n_xi: int = 4, w_d: int = 2, cost_norm: float = 5.0):
         if not _CUDAQ_AVAILABLE:
             raise RuntimeError("cudaq not installed.")
-        if n_y != 4:
-            raise NotImplementedError("Generic n_y requires parameterized kernels; "
-                                      "currently only n_y=4 is hardcoded.")
+        # if n_y != 4:
+        #     raise NotImplementedError("Generic n_y requires parameterized kernels; "
+        #                               "currently only n_y=4 is hardcoded.")
         self.c_y = list(c_y)
         self.c_r = float(c_r)
         self.n_y = n_y
         self.w_d = w_d
         self.cost_norm = cost_norm
+        self.dang = dicke_state_angles(n_y, w_d)
+        return
 
     def sample_ansatz(self, thetas: list, shots: int = 4096) -> dict:
         """Sample the DQA ansatz and return bitstring probabilities.
@@ -570,6 +571,7 @@ class CudaqQAEOptimizer:
         n_steps = len(thetas) // 2
         counts = cudaq.sample(
             dqa_ansatz,
+            self.dang,
             self.c_y,
             self.c_r, self.cost_norm,
             self.w_d,
@@ -593,6 +595,7 @@ class CudaqQAEOptimizer:
         n_steps = len(thetas) // 2
         state = cudaq.get_state(
             dqa_ansatz,
+            self.dang,
             self.c_y, self.c_r, self.cost_norm,
             self.w_d, thetas, n_steps, self.n_y)
         return np.array(state)
@@ -714,7 +717,7 @@ class CudaqQAEOptimizer:
         n_steps = len(thetas) // 2
         result = cudaq.observe(
             dqa_ansatz, h,
-            self.c_y, self.c_r, self.cost_norm,
+            self.dang, self.c_y, self.c_r, self.cost_norm,
             self.w_d, thetas, n_steps, self.n_y)
         return result.expectation()
 
