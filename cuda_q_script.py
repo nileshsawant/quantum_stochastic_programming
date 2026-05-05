@@ -15,7 +15,7 @@
 # ── BACKEND TOGGLE ─────────────────────────────────────────────────────────────
 # Change this variable to switch the entire notebook's execution path.
 # Options: 'cpu' | 'aer-gpu' | 'cuda-q'
-BACKEND = 'aer-gpu'
+BACKEND = 'cuda-q'
 
 # ── Optional: ipywidgets interactive toggle (works in JupyterLab) ───────────────
 try:
