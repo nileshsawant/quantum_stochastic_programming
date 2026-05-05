@@ -330,20 +330,24 @@ def cost_operator(gamma: float,
 # -----------------------------------------------------------------------------
 @cudaq.kernel
 def fswap_power(beta: float, q0: cudaq.qubit, q1: cudaq.qubit):
-    """Partial SWAP (SWAP^beta) on two qubits via XX+YY decomposition.
+    """Partial SWAP (SWAP^beta) on two qubits via XX+YY decomposition
+    plus the odd-parity phase needed to match Qiskit's SwapGate().power(beta).
 
     Qiskit counterpart: SwapGate().power(amplitude) applied per pair (qj, qk)
     inside ExpValFun_functions.demand_constraint_preserving_mixer().
-    CUDA-Q has no native fractional SWAP, so we decompose it as
-    Rxx(β·π/2) + Ryy(β·π/2), which is unitarily equivalent.
 
-    SWAP^β = exp(-iβπ/4 · (XX+YY))
-    Decomposed as:
-      Rxx(β·π/2) followed by Ryy(β·π/2)
-    This preserves Hamming weight (sum of excitations), implementing the
-    demand-constraint-preserving XY mixer.
+    SWAP^β matrix (computational basis |00⟩,|01⟩,|10⟩,|11⟩):
+      [[1, 0,            0,            0          ],
+       [0, cos(βπ/2),    i·sin(βπ/2),  0          ],
+       [0, i·sin(βπ/2),  cos(βπ/2),    0          ],
+       [0, 0,            0,            e^(iβπ/2)  ]]
+
+    The |11⟩ diagonal element e^(iβπ/2) is the odd-parity phase.
+    Rxx+Ryy alone gives e^(0)=1 for |11⟩, which is wrong.
+    The extra CX–Rz(angle)–CX block adds the phase only when both qubits are |1⟩.
     """
     angle = beta * math.pi / 2.0
+
     # Rxx(angle)
     h(q0)
     h(q1)
@@ -352,6 +356,7 @@ def fswap_power(beta: float, q0: cudaq.qubit, q1: cudaq.qubit):
     cx(q0, q1)
     h(q0)
     h(q1)
+
     # Ryy(angle)
     rx(math.pi / 2.0, q0)
     rx(math.pi / 2.0, q1)
@@ -360,6 +365,12 @@ def fswap_power(beta: float, q0: cudaq.qubit, q1: cudaq.qubit):
     cx(q0, q1)
     rx(-math.pi / 2.0, q0)
     rx(-math.pi / 2.0, q1)
+
+    # Odd-parity phase: adds e^(iβπ/2) to the |11⟩ component only,
+    # matching Qiskit's SwapGate().power(beta).
+    cx(q0, q1)
+    rz(angle, q1)
+    cx(q0, q1)
 
 
 # # Qiskit counterpart: the outer loop in demand_constraint_preserving_mixer()
