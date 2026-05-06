@@ -292,140 +292,183 @@ See the docs above for complete working examples of both patterns.
 
 ---
 
-## Noisy Circuit Simulation and Noise Studies
+## Porting Qiskit Circuits to CUDA-Q
 
-This section captures practical lessons from running depolarizing noise studies
-on DQA (Digitized Quantum Annealing) circuits for stochastic programming
-problems using CUDA-Q on an H100 GPU (`cuStateVec`).
+When translating a Qiskit circuit or gate to CUDA-Q, silent correctness errors
+are common. The circuit compiles and runs without errors but produces wrong
+results — often dismissed as numerical noise or shot noise. Follow this
+checklist to catch them early.
 
-### Building a depolarizing noise model
+### Rule 1: validate every ported gate with a statevector test
+
+Before using a ported gate in a larger circuit, write a unit test that applies
+it in isolation and compares the resulting statevector (or unitary matrix)
+against the Qiskit reference.
 
 ```python
-from cudaq_impl import build_depolarizing_noise_model
+import cudaq, math, numpy as np
+from qiskit.circuit.library import SwapGate
 
-noise_model = build_depolarizing_noise_model(p1=0.0001, p2=0.001)
-# p1: single-qubit gate error probability (0.01%)
-# p2: two-qubit gate error probability (0.1%)
-# Realistic near-term device parameters
+# --- CUDA-Q kernel under test ---
+@cudaq.kernel
+def my_gate(beta: float, q0: cudaq.qubit, q1: cudaq.qubit):
+    # ... your implementation ...
+    pass
+
+# Reference unitary from Qiskit
+qiskit_unitary = np.array(SwapGate().power(0.5).to_matrix())
+
+# CUDA-Q unitary
+cudaq.set_target("qpp-cpu")
+cudaq_unitary = np.array(cudaq.get_unitary(my_gate, 0.5))
+
+# Compare (up to global phase)
+assert np.allclose(np.abs(cudaq_unitary), np.abs(qiskit_unitary), atol=1e-6), \
+    "Gate unitary mismatch — porting error!"
 ```
 
-Pass `noise_model` to `CudaqQAEOptimizer`:
+Do this for **every** non-trivial gate before integrating it into the full
+ansatz. Small errors compound over many layers and produce results that look
+like noise but are not.
+
+### Rule 2: common porting error — missing phases in parametric gates
+
+Gates defined by a product of Pauli exponentials (e.g. fSWAP, iSWAP, XY gate
+families) often have an **odd-parity phase** term that Qiskit includes but
+naive decompositions omit. The symptom is a systematic bias in expectation
+values that grows with circuit depth, indistinguishable from gate noise in
+single-shot checks.
+
+Example: `SwapGate().power(beta)` in Qiskit. A naive CUDA-Q port using only
+Rxx and Ryy terms is **missing** the required CX–Rz–CX phase correction:
+
 ```python
-optimizer = CudaqQAEOptimizer(..., noise_model=noise_model)
+@cudaq.kernel
+def fswap_power(beta: float, q0: cudaq.qubit, q1: cudaq.qubit):
+    angle = beta * math.pi / 2.0
+
+    # Rxx(angle)
+    h(q0);  h(q1)
+    cx(q0, q1);  rz(angle, q1);  cx(q0, q1)
+    h(q0);  h(q1)
+
+    # Ryy(angle)
+    rx(math.pi / 2.0, q0);  rx(math.pi / 2.0, q1)
+    cx(q0, q1);  rz(angle, q1);  cx(q0, q1)
+    rx(-math.pi / 2.0, q0);  rx(-math.pi / 2.0, q1)
+
+    # Odd-parity phase — REQUIRED to match Qiskit's SwapGate().power(beta)
+    # Omitting these three lines is the most common porting mistake for this gate
+    cx(q0, q1)
+    rz(angle, q1)
+    cx(q0, q1)
 ```
+
+Always derive the full decomposition from the gate's unitary definition, not
+from a partial circuit identity.
+
+### Rule 3: bit ordering is reversed between Qiskit and CUDA-Q
+
+Qiskit uses **little-endian** ordering: qubit 0 is the **least significant bit**
+(rightmost) in bitstrings. CUDA-Q uses **big-endian** ordering: qubit 0 is the
+**most significant bit** (leftmost).
+
+| Framework | Bitstring for |0⟩⊗|1⟩ (q0=0, q1=1) | Position of q0 |
+|-----------|---------------------------------------|----------------|
+| Qiskit    | `"10"` | LSB (right) |
+| CUDA-Q    | `"01"` | MSB (left)  |
+
+When post-processing measurement bitstrings from CUDA-Q, index from the left:
+```python
+# CUDA-Q: bitstring[0] is qubit 0
+q0_val = int(bitstring[0])
+q1_val = int(bitstring[1])
+
+# Qiskit: bitstring[-1] is qubit 0
+q0_val = int(bitstring[-1])
+q1_val = int(bitstring[-2])
+```
+
+Mismatched indexing causes scrambled register assignments that are hard to
+detect without a controlled test (e.g. prepare a known basis state and assert
+the correct bit positions).
+
+### Porting checklist
+
+- [ ] Unit-test each ported gate's unitary against the Qiskit reference
+- [ ] Confirm odd-parity / phase terms are included in all parametric gates
+- [ ] Verify bitstring index conventions (big- vs little-endian) in all
+      post-processing code
+- [ ] Prepare a known basis state (e.g. |01⟩) and assert the correct bitstring
+      is returned before running the full ansatz
+- [ ] Cross-check expectation values / sample distributions for a small
+      system (2–4 qubits) against Qiskit before scaling up
+
+---
+
+## Noisy Circuit Simulation
 
 ### Choosing the right evaluation method
 
-CUDA-Q offers several ways to compute expected values — choose carefully:
-
 | Method | API | Speed | Noise support | Notes |
 |--------|-----|-------|---------------|-------|
-| Statevector loop | `cudaq.get_state()` + Python loop | **Slow** for n_y ≥ 8 (iterates 2^n states in Python) | No | Avoid for large systems |
-| Pauli observe | `cudaq.observe()` with spin Hamiltonian | **Fast** (single GPU call) | No (noiseless only) | Preferred for ideal evaluation |
-| Shot sampling | `cudaq.sample()` + post-processing | Medium | **Yes** | Required for noisy evaluation; apply constraint penalties manually |
+| Statevector loop | `cudaq.get_state()` + Python loop | Slow — iterates 2ⁿ states in Python | No | Avoid for n ≥ 8 |
+| Pauli observe | `cudaq.observe()` with spin Hamiltonian | Fast — single GPU call | **No** | Preferred for noiseless evaluation |
+| Shot sampling | `cudaq.sample()` + post-processing | Medium | **Yes** | Required for noisy evaluation |
 
-**Ideal evaluation** — use `cudaq.observe()` (single GPU kernel call, exact for noiseless):
+### Do not use `cudaq.observe()` for constraint-penalized cost functions under noise
+
+`cudaq.observe()` computes a raw Pauli expectation value. It knows nothing
+about constraint penalties defined in post-processing. If your cost function
+adds a penalty for bitstrings that violate constraints (e.g. Hamming-weight
+constraints), those penalties are absent when using `observe()` — so
+off-constraint bitstrings appear artificially cheap, and you may observe
+`cost_noisy < cost_ideal`, which is physically wrong.
+
+**Always use shot sampling + manual post-processing for noisy evaluation of
+penalized cost functions:**
+
 ```python
-# estimate_expected_value_observe(thetas) in the project
-result = cudaq.observe(kernel, hamiltonian, *thetas)
-expectation = result.expectation()
-```
+# cudaq.sample() with noise_model set on the target
+counts = cudaq.sample(kernel, *params, noise_model=noise_model, shots_count=N_SHOTS)
 
-**Noisy evaluation** — use `sample_ansatz(noise_model=..., shots=N_SHOTS)` with
-manual post-processing. **Do not use `cudaq.observe()` with a noise model for
-constraint-penalized cost functions** — `cudaq.observe()` computes raw Pauli
-expectation values and has no concept of constraint penalties, so off-constraint
-bitstrings appear artificially cheap and `φ_noisy < φ_ideal` for deep circuits.
-
-Correct noisy evaluation pattern:
-```python
-counts = sample_ansatz(thetas, noise_model=noise_model, shots=N_SHOTS)
-phi_noisy = 0.0
+cost_noisy = 0.0
 for bitstring, count in counts.items():
     prob = count / N_SHOTS
-    y_bits  = bitstring[:n_y]   # turbine decisions
-    xi_bits = bitstring[n_y:]   # wind scenarios
-    true_output = y_bits * xi_bits
-    op_cost  = float(np.dot(c_y, true_output))
-    shortfall = max(0, w_d - int(true_output.sum()))
-    phi_noisy += (op_cost + shortfall * c_r) * prob
+    # Apply the FULL cost function including all penalty terms
+    cost_noisy += full_cost(bitstring) * prob
 ```
 
-### Known bug: `_wind_scenario_cost` missing shortfall penalty
+Ensure `full_cost()` exactly matches the cost function used for the noiseless
+reference — any missing penalty term creates a systematic downward bias in
+the noisy estimate.
 
-`CudaqQAEOptimizer._wind_scenario_cost()` only sums operational costs and
-**does not include the shortfall penalty** `max(0, w_d - Σ y_j·ξ_j) · c_r`.
-This causes off-constraint bitstrings to appear cheap under noise, producing
-`φ_noisy < φ_classical` — a physically wrong result.
+### Noise model parameters
 
-Always apply the shortfall penalty manually in post-processing when running
-a noise study (as shown above). The underlying `cudaq_impl.py` bug is tracked
-separately.
+Near-term device realistic values:
+- `p1 ≈ 1e-4` (0.01%) — single-qubit gate depolarizing rate
+- `p2 ≈ 1e-3` (0.1%) — two-qubit gate depolarizing rate
 
-### DQA linear-ramp ansatz
+Using `p2 = 0.01` (1%) will produce noise levels that dominate the signal
+entirely for circuits with more than ~100 two-qubit gates.
 
-The digitized quantum annealing (DQA) linear-ramp parameter schedule:
+### Noise study across system sizes: use absolute metrics and fixed circuit depth
 
-```python
-TIMESTEPS = 20   # fix for ALL system sizes (see fair comparison note below)
-thetas = []
-for t in range(TIMESTEPS):
-    gamma_t = t / TIMESTEPS
-    beta_t  = (1 - t / TIMESTEPS) / math.pi
-    thetas += [gamma_t, beta_t]
-# Total: 2*TIMESTEPS parameters (40 for TIMESTEPS=20)
-```
+When benchmarking noise impact across different system sizes:
 
-### Fair comparison across system sizes
+1. **Fix circuit depth** (number of layers / timesteps) to the same value for
+   all sizes. If depth scales with system size, small systems have too few
+   layers for the ansatz to converge — lack of expressivity dominates over
+   noise and masks the noise signal, making the comparison meaningless.
 
-**Always fix `TIMESTEPS` to a common value** when comparing noise impact across
-system sizes. If `timesteps = n_y`, small systems have too few DQA steps and
-lack of expressivity dominates over noise — masking the noise signal entirely.
+2. **Use absolute metrics**: report `Δcost = cost_noisy − cost_ideal` (absolute
+   noise-induced increase). Avoid relative metrics such as
+   `Δcost / cost_ideal` — the denominator grows with system size, making noise
+   appear to *decrease* even when the absolute impact is increasing.
 
-With `TIMESTEPS = 20` fixed: ideal DQA errors drop to **< 3%** for all
-`n_y ∈ {4, 6, 8, 10}`, and the noise-induced cost increase becomes physically
-meaningful and monotonically growing.
-
-### Interpreting noise study results: use absolute metrics
-
-The absolute noise-induced cost increase `Δφ = φ_noisy − φ_ideal` is the
-correct metric for comparing noise impact across system sizes. **Do not use
-relative metrics** such as `(φ_noisy − φ_ideal)/φ_ideal` — the denominator
-grows with system size faster than `Δφ`, making noise appear to *decrease*
-with `n_y` even when the absolute impact is increasing.
-
-| Metric | Trend with n_y | Interpretation |
-|--------|---------------|----------------|
-| `Δφ = φ_noisy − φ_ideal` | ↑ monotonically | **Correct** — more noise damage for larger circuits |
-| `Δφ / φ_ideal × 100%` | ↓ (misleading) | Denominator grows faster than numerator |
-
-The cause is circuit-depth scaling: with fixed TIMESTEPS=20, 2-qubit gate
-count scales as ~`20 · n_y²/2`, so the probability of at least one gate error
-grows with `n_y`:
-
-| n_y | ~2Q gates | P(≥1 error) at p₂=0.001 |
-|-----|-----------|--------------------------|
-| 4   | ~160      | ~15%                     |
-| 6   | ~360      | ~30%                     |
-| 8   | ~640      | ~47%                     |
-| 10  | ~1000     | ~63%                     |
-
-### Visualization: three-panel noise study plot
-
-A three-panel figure communicates noise study results clearly:
-
-1. **Left** — Line plot of absolute `φ` values (classical, ideal DQA, noisy DQA)
-   vs `n_y`. The growing gap between ideal and noisy lines is the primary result.
-2. **Middle** — Bar chart of `Δφ = φ_noisy − φ_ideal` per system size.
-   Must increase monotonically — if it does not, check for evaluation bugs
-   (missing shortfall penalty, wrong evaluator).
-3. **Right** — Stacked bar decomposing `φ_noisy` into: classical optimal +
-   DQA approximation gap + noise impact. The noise-impact segment (red) should
-   visually grow with `n_y`, consistent with the left panel.
-
-Avoid middle/right panels that use ratios with `φ_ideal` or `φ_classical` as
-denominators — they produce visually decreasing bars that contradict the left
-panel's message.
+3. **Visualization**: keep all three panels of a noise comparison figure in the
+   same absolute cost units so they tell a consistent story. Panels using
+   different denominators can visually contradict each other and are misleading.
 
 ---
 
