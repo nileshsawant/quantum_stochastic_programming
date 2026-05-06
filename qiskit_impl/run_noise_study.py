@@ -208,9 +208,8 @@ ax.set_xticks(ny_vals); ax.grid(True, axis='y', alpha=0.4)
 
 # Right: stacked bar decomposition: classical | DQA gap | noise gap
 ax = axes[2]
-base       = ref_v
-dqa_gap    = [phi_i[i] - ref_v[i] for i in range(len(ny_vals))]
-noise_gap  = abs_gap
+base      = ref_v
+noise_gap = abs_gap
 b1 = ax.bar(ny_vals, base,      width=1.2, color='steelblue', alpha=0.85, label='Classical optimal')
 b2 = ax.bar(ny_vals, dqa_gap,   width=1.2, color='gold',      alpha=0.85, label='DQA approx. gap', bottom=base)
 b3 = ax.bar(ny_vals, noise_gap, width=1.2, color='tomato',    alpha=0.85, label='Noise impact',
