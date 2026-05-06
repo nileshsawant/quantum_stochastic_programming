@@ -176,54 +176,53 @@ for ny, thetas in optimized_thetas.items():
     print(f'  Noise shift: {deg:+.2f}% (+ = degraded, - = improved)')
 
 # ── PLOT ──────────────────────────────────────────────────────────────────────
-ny_vals = N_Y_LIST
-ref_v   = [classical_phi[ny]    for ny in ny_vals]
-phi_i   = [results_ideal[ny]    for ny in ny_vals]
-phi_n   = [results_noisy[ny]    for ny in ny_vals]
-err_i   = [abs(results_ideal[ny]-classical_phi[ny])/classical_phi[ny]*100 for ny in ny_vals]
-err_n   = [abs(results_noisy[ny]-classical_phi[ny])/classical_phi[ny]*100 for ny in ny_vals]
-deg     = [(results_noisy[ny]-results_ideal[ny])/abs(results_ideal[ny])*100 for ny in ny_vals]  # signed
+ny_vals  = N_Y_LIST
+ref_v    = [classical_phi[ny]                                          for ny in ny_vals]
+phi_i    = [results_ideal[ny]                                          for ny in ny_vals]
+phi_n    = [results_noisy[ny]                                          for ny in ny_vals]
+abs_gap  = [results_noisy[ny] - results_ideal[ny]  for ny in ny_vals]  # absolute noise impact
+dqa_gap  = [results_ideal[ny] - classical_phi[ny]  for ny in ny_vals]  # DQA approx error
 
 fig, axes = plt.subplots(1, 3, figsize=(17, 5))
 
 # Left: absolute phi values
 ax = axes[0]
 ax.plot(ny_vals, ref_v, 'k--o', lw=2, ms=8, label='Classical optimal')
-ax.plot(ny_vals, phi_i, 'b-s',  lw=2, ms=8, label='DQA ideal (linear ramp, noiseless, GPU observe)')
+ax.plot(ny_vals, phi_i, 'b-s',  lw=2, ms=8, label='DQA ideal (noiseless, GPU observe)')
 ax.plot(ny_vals, phi_n, 'r-^',  lw=2, ms=8, label=f'DQA noisy (p₁={P1}, p₂={P2})')
 ax.set_xlabel('$n_y$ (turbines)', fontsize=12)
 ax.set_ylabel('Expected second-stage cost  $\\phi$', fontsize=12)
 ax.set_title('Expected cost vs system size', fontsize=13)
 ax.set_xticks(ny_vals); ax.legend(fontsize=9); ax.grid(True, alpha=0.4)
 
-# Middle: error vs classical
+# Middle: absolute noise-induced cost increase Δφ = φ_noisy - φ_ideal
 ax = axes[1]
-x, bw = np.arange(len(ny_vals)), 0.32
-b1 = ax.bar(x-bw/2, err_i, width=bw, color='steelblue', alpha=0.85, label='Ideal')
-b2 = ax.bar(x+bw/2, err_n, width=bw, color='tomato',    alpha=0.85, label=f'Noisy (p₁={P1}, p₂={P2})')
-for rect, val in zip(list(b1)+list(b2), err_i+err_n):
-    ax.text(rect.get_x()+rect.get_width()/2, rect.get_height()+0.2,
-            f'{val:.1f}%', ha='center', va='bottom', fontsize=8)
-ax.set_xlabel('$n_y$', fontsize=12); ax.set_ylabel('Error vs classical  (%)', fontsize=11)
-ax.set_title(f'DQA accuracy: ideal vs noisy\n(timesteps={TIMESTEPS} fixed for all $n_y$)', fontsize=13)
-ax.set_xticks(x); ax.set_xticklabels([f'$n_y={n}$' for n in ny_vals])
-ax.legend(fontsize=9); ax.grid(True, axis='y', alpha=0.4)
-
-# Right: signed noise shift (+ = noise degraded result, - = noise improved)
-ax = axes[2]
-colors_deg = ['tomato' if v > 0 else 'steelblue' for v in deg]
-bars = ax.bar(ny_vals, deg, color=colors_deg, alpha=0.85, width=1.2)
-for rect, val in zip(bars, deg):
-    ypos = rect.get_height() + 0.2 if val >= 0 else rect.get_height() - 1.2
-    ax.text(rect.get_x()+rect.get_width()/2, ypos,
-            f'{val:+.1f}%', ha='center', va='bottom', fontsize=9)
+bars = ax.bar(ny_vals, abs_gap, color='tomato', alpha=0.85, width=1.2)
+for rect, val in zip(bars, abs_gap):
+    ax.text(rect.get_x()+rect.get_width()/2, rect.get_height()+0.1,
+            f'{val:.2f}', ha='center', va='bottom', fontsize=9)
 ax.set_xlabel('$n_y$ (turbines)', fontsize=12)
-ax.set_ylabel('Noise shift  (%)\n'
-              r'$= (\phi_{noisy}-\phi_{ideal})/|\phi_{ideal}|$'+
-              '\n(red = degraded, blue = improved)', fontsize=9)
-ax.set_title(f'Noise effect (p₁={P1}, p₂={P2})\n{N_SHOTS} shots, constraint-aware', fontsize=13)
-ax.axhline(0, color='k', linewidth=0.8, linestyle='--')
+ax.set_ylabel(r'Absolute noise impact  $\Delta\phi = \phi_{noisy} - \phi_{ideal}$', fontsize=10)
+ax.set_title(f'Noise-induced cost increase\n(p₁={P1}, p₂={P2}, {N_SHOTS} shots)', fontsize=13)
 ax.set_xticks(ny_vals); ax.grid(True, axis='y', alpha=0.4)
+
+# Right: stacked bar decomposition: classical | DQA gap | noise gap
+ax = axes[2]
+base       = ref_v
+dqa_gap    = [phi_i[i] - ref_v[i] for i in range(len(ny_vals))]
+noise_gap  = abs_gap
+b1 = ax.bar(ny_vals, base,      width=1.2, color='steelblue', alpha=0.85, label='Classical optimal')
+b2 = ax.bar(ny_vals, dqa_gap,   width=1.2, color='gold',      alpha=0.85, label='DQA approx. gap', bottom=base)
+b3 = ax.bar(ny_vals, noise_gap, width=1.2, color='tomato',    alpha=0.85, label='Noise impact',
+            bottom=[base[i]+dqa_gap[i] for i in range(len(ny_vals))])
+for i, (rect, val) in enumerate(zip(b3, noise_gap)):
+    top = base[i] + dqa_gap[i] + val
+    ax.text(rect.get_x()+rect.get_width()/2, top + 0.2,
+            f'+{val:.1f}', ha='center', va='bottom', fontsize=8, color='darkred')
+ax.set_xlabel('$n_y$ (turbines)', fontsize=12)
+ax.set_ylabel('Expected second-stage cost  $\phi$', fontsize=12)
+ax.set_title(f'Cost decomposition\nclassical + DQA gap + noise impact', fontsize=13)
+ax.set_xticks(ny_vals); ax.legend(fontsize=9); ax.grid(True, axis='y', alpha=0.4)
 
 plt.tight_layout()
 out_png = os.path.join(_QISKIT_IMPL, 'noise_study_accuracy.png')
