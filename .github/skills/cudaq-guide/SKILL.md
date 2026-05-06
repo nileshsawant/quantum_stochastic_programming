@@ -292,6 +292,143 @@ See the docs above for complete working examples of both patterns.
 
 ---
 
+## Noisy Circuit Simulation and Noise Studies
+
+This section captures practical lessons from running depolarizing noise studies
+on DQA (Digitized Quantum Annealing) circuits for stochastic programming
+problems using CUDA-Q on an H100 GPU (`cuStateVec`).
+
+### Building a depolarizing noise model
+
+```python
+from cudaq_impl import build_depolarizing_noise_model
+
+noise_model = build_depolarizing_noise_model(p1=0.0001, p2=0.001)
+# p1: single-qubit gate error probability (0.01%)
+# p2: two-qubit gate error probability (0.1%)
+# Realistic near-term device parameters
+```
+
+Pass `noise_model` to `CudaqQAEOptimizer`:
+```python
+optimizer = CudaqQAEOptimizer(..., noise_model=noise_model)
+```
+
+### Choosing the right evaluation method
+
+CUDA-Q offers several ways to compute expected values — choose carefully:
+
+| Method | API | Speed | Noise support | Notes |
+|--------|-----|-------|---------------|-------|
+| Statevector loop | `cudaq.get_state()` + Python loop | **Slow** for n_y ≥ 8 (iterates 2^n states in Python) | No | Avoid for large systems |
+| Pauli observe | `cudaq.observe()` with spin Hamiltonian | **Fast** (single GPU call) | No (noiseless only) | Preferred for ideal evaluation |
+| Shot sampling | `cudaq.sample()` + post-processing | Medium | **Yes** | Required for noisy evaluation; apply constraint penalties manually |
+
+**Ideal evaluation** — use `cudaq.observe()` (single GPU kernel call, exact for noiseless):
+```python
+# estimate_expected_value_observe(thetas) in the project
+result = cudaq.observe(kernel, hamiltonian, *thetas)
+expectation = result.expectation()
+```
+
+**Noisy evaluation** — use `sample_ansatz(noise_model=..., shots=N_SHOTS)` with
+manual post-processing. **Do not use `cudaq.observe()` with a noise model for
+constraint-penalized cost functions** — `cudaq.observe()` computes raw Pauli
+expectation values and has no concept of constraint penalties, so off-constraint
+bitstrings appear artificially cheap and `φ_noisy < φ_ideal` for deep circuits.
+
+Correct noisy evaluation pattern:
+```python
+counts = sample_ansatz(thetas, noise_model=noise_model, shots=N_SHOTS)
+phi_noisy = 0.0
+for bitstring, count in counts.items():
+    prob = count / N_SHOTS
+    y_bits  = bitstring[:n_y]   # turbine decisions
+    xi_bits = bitstring[n_y:]   # wind scenarios
+    true_output = y_bits * xi_bits
+    op_cost  = float(np.dot(c_y, true_output))
+    shortfall = max(0, w_d - int(true_output.sum()))
+    phi_noisy += (op_cost + shortfall * c_r) * prob
+```
+
+### Known bug: `_wind_scenario_cost` missing shortfall penalty
+
+`CudaqQAEOptimizer._wind_scenario_cost()` only sums operational costs and
+**does not include the shortfall penalty** `max(0, w_d - Σ y_j·ξ_j) · c_r`.
+This causes off-constraint bitstrings to appear cheap under noise, producing
+`φ_noisy < φ_classical` — a physically wrong result.
+
+Always apply the shortfall penalty manually in post-processing when running
+a noise study (as shown above). The underlying `cudaq_impl.py` bug is tracked
+separately.
+
+### DQA linear-ramp ansatz
+
+The digitized quantum annealing (DQA) linear-ramp parameter schedule:
+
+```python
+TIMESTEPS = 20   # fix for ALL system sizes (see fair comparison note below)
+thetas = []
+for t in range(TIMESTEPS):
+    gamma_t = t / TIMESTEPS
+    beta_t  = (1 - t / TIMESTEPS) / math.pi
+    thetas += [gamma_t, beta_t]
+# Total: 2*TIMESTEPS parameters (40 for TIMESTEPS=20)
+```
+
+### Fair comparison across system sizes
+
+**Always fix `TIMESTEPS` to a common value** when comparing noise impact across
+system sizes. If `timesteps = n_y`, small systems have too few DQA steps and
+lack of expressivity dominates over noise — masking the noise signal entirely.
+
+With `TIMESTEPS = 20` fixed: ideal DQA errors drop to **< 3%** for all
+`n_y ∈ {4, 6, 8, 10}`, and the noise-induced cost increase becomes physically
+meaningful and monotonically growing.
+
+### Interpreting noise study results: use absolute metrics
+
+The absolute noise-induced cost increase `Δφ = φ_noisy − φ_ideal` is the
+correct metric for comparing noise impact across system sizes. **Do not use
+relative metrics** such as `(φ_noisy − φ_ideal)/φ_ideal` — the denominator
+grows with system size faster than `Δφ`, making noise appear to *decrease*
+with `n_y` even when the absolute impact is increasing.
+
+| Metric | Trend with n_y | Interpretation |
+|--------|---------------|----------------|
+| `Δφ = φ_noisy − φ_ideal` | ↑ monotonically | **Correct** — more noise damage for larger circuits |
+| `Δφ / φ_ideal × 100%` | ↓ (misleading) | Denominator grows faster than numerator |
+
+The cause is circuit-depth scaling: with fixed TIMESTEPS=20, 2-qubit gate
+count scales as ~`20 · n_y²/2`, so the probability of at least one gate error
+grows with `n_y`:
+
+| n_y | ~2Q gates | P(≥1 error) at p₂=0.001 |
+|-----|-----------|--------------------------|
+| 4   | ~160      | ~15%                     |
+| 6   | ~360      | ~30%                     |
+| 8   | ~640      | ~47%                     |
+| 10  | ~1000     | ~63%                     |
+
+### Visualization: three-panel noise study plot
+
+A three-panel figure communicates noise study results clearly:
+
+1. **Left** — Line plot of absolute `φ` values (classical, ideal DQA, noisy DQA)
+   vs `n_y`. The growing gap between ideal and noisy lines is the primary result.
+2. **Middle** — Bar chart of `Δφ = φ_noisy − φ_ideal` per system size.
+   Must increase monotonically — if it does not, check for evaluation bugs
+   (missing shortfall penalty, wrong evaluator).
+3. **Right** — Stacked bar decomposing `φ_noisy` into: classical optimal +
+   DQA approximation gap + noise impact. The noise-impact segment (red) should
+   visually grow with `n_y`, consistent with the left panel.
+
+Avoid middle/right panels that use ratios with `φ_ideal` or `φ_classical` as
+denominators — they produce visually decreasing bars that contradict the left
+panel's message.
+
+---
+
 ## Limitations
 
 - GPU simulation requires Linux (x86_64 or ARM64); macOS is CPU-only
