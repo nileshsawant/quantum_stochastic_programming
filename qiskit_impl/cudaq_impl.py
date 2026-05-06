@@ -530,6 +530,72 @@ def dqa_ansatz(dicke_angles: list[float],
 
 
 # =============================================================================
+# Noise model utilities
+# =============================================================================
+
+def build_depolarizing_noise_model(p1: float = 0.001,
+                                   p2: float = 0.01) -> 'cudaq.NoiseModel':
+    """Build a simple depolarizing noise model for the DQA/QAE kernels.
+
+    Adds a single-qubit depolarization channel after every single-qubit gate
+    and a two-qubit depolarization channel after every two-qubit gate.
+
+    The **nvidia** target (GPU statevector) supports trajectory-based noisy
+    simulation: just pass the returned ``NoiseModel`` to ``cudaq.sample()`` or
+    ``cudaq.observe()``.  The ``density-matrix-cpu`` target runs an exact
+    density-matrix simulation and also accepts this noise model.
+
+    Args:
+        p1: Depolarizing probability for single-qubit gates.
+            With probability ``p1 * 2/3`` one of X, Y, Z is applied.
+            State is unchanged with probability ``1 - p1``.
+            Typical gate error rates on current hardware: 1e-3 – 1e-2.
+        p2: Depolarizing probability for two-qubit gates.
+            With probability ``p2 * 14/15`` one of the 15 non-identity
+            two-qubit Pauli errors is applied.
+            Typical two-qubit error rates: 1e-2 – 5e-2.
+
+    Returns:
+        A ``cudaq.NoiseModel`` ready to be passed to ``cudaq.sample()`` /
+        ``cudaq.observe()`` / ``CudaqQAEOptimizer.__init__``.
+
+    Example::
+
+        import cudaq
+        from cudaq_impl import build_depolarizing_noise_model
+
+        cudaq.set_target('nvidia')
+        noise = build_depolarizing_noise_model(p1=0.001, p2=0.01)
+        opt   = CudaqQAEOptimizer(..., noise_model=noise)
+        phi   = opt.estimate_expected_value_noisy_trajectory(
+                    thetas, num_trajectories=1024)
+    """
+    if not _CUDAQ_AVAILABLE:
+        raise RuntimeError("cudaq not installed.")
+
+    noise = cudaq.NoiseModel()
+
+    # ---- single-qubit depolarization ----------------------------------
+    dep1 = cudaq.Depolarization1(p1)
+    _single_qubit_gates = ['h', 'x', 'y', 'z', 'rx', 'ry', 'rz', 't', 's',
+                           'tdg', 'sdg', 'r1']
+    for gate in _single_qubit_gates:
+        noise.add_all_qubit_channel(gate, dep1)
+
+    # ---- two-qubit depolarization -------------------------------------
+    # cudaq.Depolarization2 applies one of {IX,IY,...,ZZ} with equal
+    # probability p2/15 each; state is unchanged with prob 1-p2.
+    dep2 = cudaq.Depolarization2(p2)
+    _two_qubit_gates = ['cx', 'cnot', 'cy', 'cz', 'swap',
+                        'rxx', 'ryy', 'rzz',
+                        'cry', 'crx', 'crz', 'cphase']
+    for gate in _two_qubit_gates:
+        noise.add_all_qubit_channel(gate, dep2)
+
+    return noise
+
+
+# =============================================================================
 # Python-level runner (mirrors BinaryNestedOptimizer.execute_optimizer)
 # =============================================================================
 
@@ -555,18 +621,31 @@ class CudaqQAEOptimizer:
     """
 
     def __init__(self, c_x: list, c_y: list, c_r: float,
-                 n_y: int = 4, n_xi: int = 4, w_d: int = 2, cost_norm: float = 5.0):
+                 n_y: int = 4, n_xi: int = 4, w_d: int = 2, cost_norm: float = 5.0,
+                 noise_model=None):
+        """Initialise the CUDA-Q QAE optimizer.
+
+        Args:
+            c_x:        First-stage operational cost vector.
+            c_y:        Second-stage per-turbine fuel/operational costs.
+            c_r:        Recourse (penalty) cost per turbine.
+            n_y:        Number of turbines / qubits in the y-register.
+            n_xi:       Number of qubits in the xi (wind) register.
+            w_d:        Required Hamming weight of y (= d - x).
+            cost_norm:  Normalisation constant for the QAE oracle (≥ max cost).
+            noise_model: Optional ``cudaq.NoiseModel`` for noisy simulation.
+                         Build one with :func:`build_depolarizing_noise_model`.
+                         Requires the ``nvidia`` or ``density-matrix-cpu`` target.
+        """
         if not _CUDAQ_AVAILABLE:
             raise RuntimeError("cudaq not installed.")
-        # if n_y != 4:
-        #     raise NotImplementedError("Generic n_y requires parameterized kernels; "
-        #                               "currently only n_y=4 is hardcoded.")
         self.c_y = list(c_y)
         self.c_r = float(c_r)
         self.n_y = n_y
         self.w_d = w_d
         self.cost_norm = cost_norm
         self.dang = dicke_state_angles(n_y, w_d)
+        self.noise_model = noise_model  # None ⇒ ideal (noiseless) simulation
         return
 
     def sample_ansatz(self, thetas: list, shots: int = 4096) -> dict:
@@ -587,7 +666,8 @@ class CudaqQAEOptimizer:
             self.c_r, self.cost_norm,
             self.w_d,
             thetas, n_steps, self.n_y,
-            shots_count=shots)
+            shots_count=shots,
+            noise_model=self.noise_model)
         total = sum(counts.values())
         return {k: v / total for k, v in counts.items()}
 
@@ -711,31 +791,96 @@ class CudaqQAEOptimizer:
             h = terms if h is None else h + terms
         return h
 
-    def estimate_expected_value_observe(self, thetas: list) -> float:
-        """Exact expected second-stage cost via cudaq.observe() (no shots).
+    def estimate_expected_value_observe(self, thetas: list,
+                                           num_trajectories: int = None) -> float:
+        """Expected second-stage cost via cudaq.observe().
 
         Constructs the cost function as a Pauli Z SpinOperator via
-        build_cost_hamiltonian(), then evaluates <psi|H|psi> exactly using
-        cudaq.observe().  No sampling noise; exact up to floating-point precision.
+        build_cost_hamiltonian(), then evaluates <psi|H|psi> using cudaq.observe().
 
-        This is the most direct CUDA-Q approach: the expectation value is computed
-        in a single pass through the statevector without enumerating basis states.
+        **Ideal (noiseless):** When ``self.noise_model`` is ``None`` the result is
+        exact to floating-point precision (statevector, no sampling noise).
+
+        **Noisy:** When ``self.noise_model`` is set the ``nvidia`` target runs
+        trajectory (Monte-Carlo) simulation.  Statistical error scales as
+        ~1/sqrt(num_trajectories), so increase ``num_trajectories`` for
+        tighter estimates.
 
         Requires a statevector-capable target: 'qpp-cpu' or 'nvidia'.
 
         Args:
-            thetas: DQA angles [gamma_0, beta_0, ...].
+            thetas:           DQA angles [gamma_0, beta_0, ...].
+            num_trajectories: Number of Monte-Carlo trajectories for noisy
+                              simulation.  Ignored when noise_model is None.
+                              Defaults to 1024 when noise is active.
 
         Returns:
-            Exact expected second-stage cost.
+            Expected second-stage cost (noisy or exact, depending on setup).
         """
         h = self.build_cost_hamiltonian()
         n_steps = len(thetas) // 2
-        result = cudaq.observe(
-            dqa_ansatz, h,
-            self.dang, self.c_y, self.c_r, self.cost_norm,
-            self.w_d, thetas, n_steps, self.n_y)
+        if self.noise_model is not None:
+            n_traj = num_trajectories if num_trajectories is not None else 1024
+            result = cudaq.observe(
+                dqa_ansatz, h,
+                self.dang, self.c_y, self.c_r, self.cost_norm,
+                self.w_d, thetas, n_steps, self.n_y,
+                noise_model=self.noise_model,
+                num_trajectories=n_traj)
+        else:
+            result = cudaq.observe(
+                dqa_ansatz, h,
+                self.dang, self.c_y, self.c_r, self.cost_norm,
+                self.w_d, thetas, n_steps, self.n_y)
         return result.expectation()
+
+    def estimate_expected_value_noisy_trajectory(
+            self, thetas: list, num_trajectories: int = 1024) -> float:
+        """Noisy expected second-stage cost via trajectory simulation.
+
+        Convenience wrapper around :meth:`estimate_expected_value_observe` that
+        makes it explicit that noisy trajectory simulation is being used.
+        Requires:
+
+        * ``self.noise_model`` to be set (e.g. from
+          :func:`build_depolarizing_noise_model`).
+        * The **nvidia** target (``cudaq.set_target('nvidia')``).
+
+        Statistical error scales as ~1/sqrt(num_trajectories).  GPU batched
+        trajectory simulation is automatically activated by the ``nvidia`` target
+        for small state vectors, drastically reducing wall time.
+
+        Args:
+            thetas:           DQA angles [gamma_0, beta_0, ...].
+            num_trajectories: Number of Monte-Carlo trajectories.  Higher
+                              values reduce shot noise at the cost of more
+                              GPU compute.  Typical starting point: 1024.
+
+        Returns:
+            Noisy estimate of the expected second-stage cost.
+
+        Raises:
+            RuntimeError: If no noise model has been set on the optimizer.
+
+        Example::
+
+            import cudaq
+            from cudaq_impl import CudaqQAEOptimizer, build_depolarizing_noise_model
+
+            cudaq.set_target('nvidia')
+            noise = build_depolarizing_noise_model(p1=0.001, p2=0.01)
+            opt = CudaqQAEOptimizer(c_x=..., c_y=..., c_r=10., n_y=6,
+                                     w_d=3, cost_norm=40., noise_model=noise)
+            phi_noisy = opt.estimate_expected_value_noisy_trajectory(
+                            thetas, num_trajectories=2048)
+        """
+        if self.noise_model is None:
+            raise RuntimeError(
+                "No noise model set.  Build one with "
+                "build_depolarizing_noise_model() and pass it to "
+                "CudaqQAEOptimizer(noise_model=...).")
+        return self.estimate_expected_value_observe(thetas,
+                                                    num_trajectories=num_trajectories)
 
     def _wind_scenario_cost(self, y: list, xi: list, wind_demand: int) -> float:
         """Second-stage cost Q(y, xi) for one scenario.
