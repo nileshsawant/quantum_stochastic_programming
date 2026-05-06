@@ -79,47 +79,33 @@ vectors for each scenario; exact to floating-point precision.
 
 Circuit gates used (from `cudaq.draw`): `h`, `x` (CNOT when controlled), `r1` (controlled-phase), `rx`, `ry`, `rz`.
 
-### 3.2 DQA angles (linear ramp)
+### 3.2 DQA angles (linear ramp, 20 timesteps fixed)
 
-`USE_COBYLA = False` — angles set to the adiabatic linear ramp used as the
-default in `cuda_q_script.py`:
+`USE_COBYLA = False` — angles set to the adiabatic linear ramp.
+**`TIMESTEPS = 20` for all system sizes** (mentor suggestion: fixed depth so
+all sizes are on equal footing; with `timesteps = n_y`, small systems had only
+4–6 steps and lack of DQA expressivity dominated over noise effects, making
+the comparison unfair).
 
 $$
-\gamma_t = \frac{t}{\text{timesteps}}, \quad
-\beta_t  = \frac{1 - t/\text{timesteps}}{\pi}, \quad t = 0, 1, \ldots, \text{timesteps}-1
+\gamma_t = \frac{t}{20}, \quad
+\beta_t  = \frac{1 - t/20}{\pi}, \quad t = 0, 1, \ldots, 19
 $$
 
-| $n_y$ | `timesteps` | # parameters |
-|--------|-------------|--------------|
-| 4  |  4 |  8 |
-| 6  |  6 | 12 |
-| 8  |  8 | 16 |
-| 10 | 10 | 20 |
+| $n_y$ | TIMESTEPS | # parameters |
+|--------|-----------|--------------|
+| 4  | 20 | 40 |
+| 6  | 20 | 40 |
+| 8  | 20 | 40 |
+| 10 | 20 | 40 |
 
-Explicit $(\gamma_t, \beta_t)$ pairs used:
-
-**$n_y = 4$ (timesteps = 4):**
+First and last $(\gamma_t, \beta_t)$ pairs (same for all $n_y$):
 ```
-(0.0000, 0.3183), (0.2500, 0.2387), (0.5000, 0.1592), (0.7500, 0.0796)
-```
-
-**$n_y = 6$ (timesteps = 6):**
-```
-(0.0000, 0.3183), (0.1667, 0.2653), (0.3333, 0.2122),
-(0.5000, 0.1592), (0.6667, 0.1061), (0.8333, 0.0531)
-```
-
-**$n_y = 8$ (timesteps = 8):**
-```
-(0.0000, 0.3183), (0.1250, 0.2785), (0.2500, 0.2387), (0.3750, 0.1989),
-(0.5000, 0.1592), (0.6250, 0.1194), (0.7500, 0.0796), (0.8750, 0.0398)
-```
-
-**$n_y = 10$ (timesteps = 10):**
-```
-(0.0000, 0.3183), (0.1000, 0.2865), (0.2000, 0.2546), (0.3000, 0.2228),
-(0.4000, 0.1910), (0.5000, 0.1592), (0.6000, 0.1273), (0.7000, 0.0955),
-(0.8000, 0.0637), (0.9000, 0.0318)
+t= 0: (0.0000, 0.3183)
+t= 1: (0.0500, 0.3024)
+...
+t=18: (0.9000, 0.0318)
+t=19: (0.9500, 0.0159)
 ```
 
 ---
