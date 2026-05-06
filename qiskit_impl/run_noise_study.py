@@ -1,13 +1,15 @@
 """
 Noise study: DQA accuracy (ideal vs depolarizing) for n_y in {4, 6, 8, 10}.
 
-Key design choices
-------------------
-* COBYLA uses estimate_expected_value_observe() — a single cudaq.observe() GPU
-  call that computes <psi|H|psi> as a tensor contraction.  No Python loop over
-  2^(2*n_y) states — O(1) GPU calls vs O(2^(2*n_y)) Python iterations.
-* P_LAYERS=2 (p=2 DQA layers, 4 parameters) — COBYLA-friendly regardless of n_y.
-* Reports both error-vs-classical and pure noise degradation.
+Mirrors cuda_q_script.py exactly:
+  c_y        = np.linspace(0.1, 1.0, n_y)
+  w_d        = n_y - 2  (x0=[2], d=n_y)
+  timesteps  = n_y      (2*n_y DQA parameters)
+  theta0     = linear ramp (same formula as cuda_q_script.py)
+  USE_COBYLA = False     (linear ramp without optimisation, matching reference)
+  classical  = BinaryNestedOptimizer.brute_force_wind_demand_expectation_values()
+  ideal eval = estimate_expected_value_sv(Theta, w_d)
+  noisy eval = estimate_expected_value_noisy_trajectory(Theta, N_TRAJ)
 
 Run with:
   /kfs3/scratch/nsawant/qiskit_env/bin/python run_noise_study.py 2>&1 | tee /tmp/noise_study.log
@@ -29,6 +31,7 @@ from scipy.optimize import minimize
 
 import cudaq
 from cudaq_impl import CudaqQAEOptimizer, build_depolarizing_noise_model
+from binary_optimizer import BinaryNestedOptimizer
 
 cudaq.set_target('nvidia')
 print(f'CUDA-Q  target : {cudaq.get_target().name}')
@@ -40,74 +43,82 @@ N_TRAJ  = 2048
 noise_model = build_depolarizing_noise_model(p1=P1, p2=P2)
 print(f'Noise model    : p1={P1}, p2={P2}, trajectories={N_TRAJ}\n')
 
-# ── PROBLEM CONFIGS ───────────────────────────────────────────────────────────
-_BASE_CY = [0.4, 0.5, 0.6, 0.7, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8]
+USE_COBYLA = False   # False = linear ramp (matches cuda_q_script.py default)
+
+# ── PROBLEM CONFIGS (identical to cuda_q_script.py) ──────────────────────────
+# c_y = linspace(0.1, 1.0, n_y), x0=[2], w_d=n_y-2, timesteps=n_y
 N_Y_LIST = [4, 6, 8, 10]
-P_LAYERS = 2       # fixed DQA depth: 4 parameters always
 C_R      = 10.0
+C_X      = [3.]
 
 CONFIGS = {}
 for ny in N_Y_LIST:
-    w  = ny // 2
-    cy = _BASE_CY[:ny]
-    cost_norm = w * C_R / ny
-    # adiabatic warm-start angles
-    theta0 = []
-    for t in range(P_LAYERS):
-        s = (t + 1) / P_LAYERS
-        theta0 += [s * math.pi / 4, (1 - s) * math.pi / 4]
-    CONFIGS[ny] = dict(n_y=ny, w_d=w, c_y=cy, c_r=C_R,
-                       cost_norm=cost_norm, theta0=theta0)
-    print(f'  n_y={ny:2d}  w_d={w}  cost_norm={cost_norm:.2f}  '
-          f'#params={len(theta0)}  c_y={[round(c,2) for c in cy]}')
+    c_y       = list(np.linspace(0.1, 1.0, ny))
+    w_d       = ny - 2              # x0=[2], d=n_y
+    cost_norm = w_d * C_R / ny
+    timesteps = ny
+    theta0    = []
+    for t in range(timesteps):
+        theta0.append(float(t / timesteps))
+        theta0.append((1 - float(t / timesteps)) / math.pi)
+    # uniform pdf over all xi
+    pdf = {tuple(int(v) for v in f'{i:0{ny}b}'): 1/2**ny
+           for i in range(2**ny)}
+    CONFIGS[ny] = dict(n_y=ny, w_d=w_d, c_y=c_y, c_r=C_R,
+                       cost_norm=cost_norm, timesteps=timesteps,
+                       theta0=theta0, pdf=pdf)
+    print(f'  n_y={ny:2d}  w_d={w_d}  cost_norm={cost_norm:.4f}  '
+          f'#params={len(theta0)}  c_y={[round(c,3) for c in c_y]}')
 
-# ── CLASSICAL REFERENCE ─────────────────────────────────────────────────────
-# Brute-force E[Q] with optimal y* (commit w cheapest turbines) over uniform xi
-print('\n── Classical brute-force E[Q] ──')
+# ── CLASSICAL REFERENCE (matches cuda_q_script.py) ──────────────────────────
+# Uses BinaryNestedOptimizer.brute_force_wind_demand_expectation_values(), the
+# same source of truth as cuda_q_script.py.
+print('\n── Classical reference (BinaryNestedOptimizer) ──')
 classical_phi = {}
 for ny, cfg in CONFIGS.items():
-    cy, cr, w = cfg['c_y'], cfg['c_r'], cfg['w_d']
-    y_star = [0] * ny
-    for j in sorted(range(ny), key=lambda j: cy[j])[:w]:
-        y_star[j] = 1
-    total = 0.0
-    for xi_int in range(2 ** ny):
-        for j in range(ny):
-            if y_star[j]:
-                total += cy[j] if (xi_int >> j) & 1 else cr
-    classical_phi[ny] = total / (2 ** ny)
-    print(f'  n_y={ny}  y*={y_star}  φ_classical={classical_phi[ny]:.4f}')
+    bno = BinaryNestedOptimizer(C_X, cfg['c_y'], C_R, cfg['pdf'],
+                                ny, is_uniform=True)
+    exp_vals = bno.brute_force_wind_demand_expectation_values()
+    classical_phi[ny] = exp_vals[cfg['w_d']]
+    print(f'  n_y={ny:2d}  w_d={cfg["w_d"]}  φ_classical={classical_phi[ny]:.4f}')
 
-# ── COBYLA WITH cudaq.observe() — O(1) GPU calls per iteration ───────────────
-# estimate_expected_value_observe uses cudaq.observe() to compute <psi|H|psi>
-# as a single tensor contraction on the GPU.  No Python loop over 2^(2*n_y)
-# states.  For n_y=10 this is ~10000x faster than estimate_expected_value_sv.
-print('\n── COBYLA optimisation using cudaq.observe() ──')
+# ── DQA ANGLES: linear ramp or COBYLA (matches cuda_q_script.py) ─────────────
+# Reference default: USE_COBYLA=False — just the linear ramp.
+# When USE_COBYLA=True, uses estimate_expected_value_sv(Theta, w_d) exactly
+# as cuda_q_script.py does (not observe — that gives different semantics).
+if USE_COBYLA:
+    print('\n── COBYLA optimisation using estimate_expected_value_sv ──')
+else:
+    print('\n── Using linear ramp (USE_COBYLA=False, matching cuda_q_script.py) ──')
+
 optimized_thetas = {}
-cobyla_phi = {}
 for ny, cfg in CONFIGS.items():
-    print(f'\n  n_y={ny}  ({len(cfg["theta0"])} params)...', flush=True)
-    opt = CudaqQAEOptimizer(
-        c_x=[3.]*ny, c_y=cfg['c_y'], c_r=cfg['c_r'],
-        n_y=ny, w_d=cfg['w_d'], cost_norm=cfg['cost_norm'],
-        noise_model=None,
-    )
-    calls = [0]
-    def _obj(th, _opt=opt):
-        calls[0] += 1
-        return _opt.estimate_expected_value_observe(th.tolist())  # single GPU call
-
-    t0  = time.perf_counter()
-    res = minimize(_obj, cfg['theta0'], method='COBYLA',
-                   options={'maxiter': 1000, 'rhobeg': 0.3, 'catol': 1e-5})
-    dt  = time.perf_counter() - t0
-    optimized_thetas[ny] = res.x.tolist()
-    cobyla_phi[ny] = res.fun
-    err = abs(res.fun - classical_phi[ny]) / classical_phi[ny] * 100
-    print(f'  φ_DQA={res.fun:.4f}  φ_class={classical_phi[ny]:.4f}  '
-          f'err={err:.2f}%  evals={calls[0]}  t={dt:.1f}s')
+    if USE_COBYLA:
+        print(f'\n  n_y={ny}  ({len(cfg["theta0"])} params)...', flush=True)
+        opt = CudaqQAEOptimizer(
+            c_x=C_X, c_y=cfg['c_y'], c_r=cfg['c_r'],
+            n_y=ny, w_d=cfg['w_d'], cost_norm=cfg['cost_norm'],
+            noise_model=None)
+        calls = [0]
+        def _obj(th, _opt=opt, _wd=cfg['w_d']):
+            calls[0] += 1
+            return _opt.estimate_expected_value_sv(th.tolist(), _wd)
+        t0  = time.perf_counter()
+        res = minimize(_obj, cfg['theta0'], method='COBYLA',
+                       options={'maxiter': 500, 'rhobeg': 0.5, 'disp': False})
+        dt  = time.perf_counter() - t0
+        optimized_thetas[ny] = res.x.tolist()
+        err = abs(res.fun - classical_phi[ny]) / classical_phi[ny] * 100
+        print(f'  φ_DQA={res.fun:.4f}  φ_class={classical_phi[ny]:.4f}  '
+              f'err={err:.2f}%  evals={calls[0]}  t={dt:.1f}s')
+    else:
+        optimized_thetas[ny] = cfg['theta0']
+        print(f'  n_y={ny:2d}  linear ramp  #params={len(cfg["theta0"])}')
 
 # ── FINAL EVALUATION: ideal vs noisy ────────────────────────────────────────
+# Ideal: estimate_expected_value_sv(Theta, w_d)  — exact statevector, same as
+#        the reference notebook's DQA evaluation cell.
+# Noisy: estimate_expected_value_noisy_trajectory — trajectory MC with noise.
 print('\n── Final evaluation: ideal vs noisy ──')
 results_ideal, results_noisy = {}, {}
 for ny, thetas in optimized_thetas.items():
@@ -115,15 +126,15 @@ for ny, thetas in optimized_thetas.items():
     print(f'\n  n_y={ny}...', flush=True)
 
     opt_i = CudaqQAEOptimizer(
-        c_x=[3.]*ny, c_y=cfg['c_y'], c_r=cfg['c_r'],
+        c_x=C_X, c_y=cfg['c_y'], c_r=cfg['c_r'],
         n_y=ny, w_d=cfg['w_d'], cost_norm=cfg['cost_norm'], noise_model=None)
     t0    = time.perf_counter()
-    phi_i = opt_i.estimate_expected_value_observe(thetas)
+    phi_i = opt_i.estimate_expected_value_sv(thetas, cfg['w_d'])
     dt_i  = time.perf_counter() - t0
     results_ideal[ny] = phi_i
 
     opt_n = CudaqQAEOptimizer(
-        c_x=[3.]*ny, c_y=cfg['c_y'], c_r=cfg['c_r'],
+        c_x=C_X, c_y=cfg['c_y'], c_r=cfg['c_r'],
         n_y=ny, w_d=cfg['w_d'], cost_norm=cfg['cost_norm'], noise_model=noise_model)
     t0    = time.perf_counter()
     phi_n = opt_n.estimate_expected_value_noisy_trajectory(thetas, N_TRAJ)
@@ -150,7 +161,7 @@ fig, axes = plt.subplots(1, 3, figsize=(17, 5))
 # Left: absolute phi values
 ax = axes[0]
 ax.plot(ny_vals, ref_v, 'k--o', lw=2, ms=8, label='Classical optimal')
-ax.plot(ny_vals, phi_i, 'b-s',  lw=2, ms=8, label='DQA ideal (p=2, noiseless)')
+ax.plot(ny_vals, phi_i, 'b-s',  lw=2, ms=8, label='DQA ideal (linear ramp, noiseless)')
 ax.plot(ny_vals, phi_n, 'r-^',  lw=2, ms=8, label=f'DQA noisy (p₁={P1}, p₂={P2})')
 ax.set_xlabel('$n_y$ (turbines)', fontsize=12)
 ax.set_ylabel('Expected second-stage cost  $\\phi$', fontsize=12)
@@ -178,7 +189,7 @@ for rect, val in zip(bars, deg):
             f'{val:.1f}%', ha='center', va='bottom', fontsize=9)
 ax.set_xlabel('$n_y$ (turbines)', fontsize=12)
 ax.set_ylabel('Noise degradation  (%)\n$= |\\phi_{noisy}-\\phi_{ideal}|/|\\phi_{ideal}|$', fontsize=10)
-ax.set_title(f'Pure noise effect (p₁={P1}, p₂={P2})\n{N_TRAJ} trajectories', fontsize=13)
+ax.set_title(f'Pure noise effect (p₁={P1}, p₂={P2})\n{N_TRAJ} trajectories, timesteps=n_y', fontsize=13)
 ax.set_xticks(ny_vals); ax.grid(True, axis='y', alpha=0.4)
 
 plt.tight_layout()
@@ -202,6 +213,7 @@ out_json = os.path.join(_QISKIT_IMPL, 'noise_study_results.json')
 json.dump({str(ny): {
     'classical': classical_phi[ny], 'ideal': results_ideal[ny],
     'noisy': results_noisy[ny], 'thetas': optimized_thetas[ny],
-    'p_layers': P_LAYERS, 'p1': P1, 'p2': P2, 'n_traj': N_TRAJ,
+    'timesteps': CONFIGS[ny]['timesteps'], 'use_cobyla': USE_COBYLA,
+    'p1': P1, 'p2': P2, 'n_traj': N_TRAJ,
 } for ny in ny_vals}, open(out_json,'w'), indent=2)
 print(f'Results saved → {out_json}')
