@@ -1,7 +1,7 @@
 # DQA Noise Study Report
 
 **Date:** 2026-05-06  
-**Branch:** `fix/cuda-q-script`  
+**Branch:** `fix/cuda-q-script`  **Commit:** `64aacbb`  
 **Hardware:** NVIDIA H100 PCIe (81 GB, CUDA 12.4)  
 **CUDA-Q version:** 0.14  
 **Script:** [`qiskit_impl/run_noise_study.py`](run_noise_study.py)
@@ -174,21 +174,29 @@ values). The previous run used $p_2 = 0.01$ (10× higher), which is more
 representative of current average-device performance but caused the n_y=4
 relative error to exceed 100% due to the small absolute scale of $\phi$.
 
-### 4.5 Simulation method
+### 4.5 Simulation method and cost evaluation
 
-**Trajectory (Monte-Carlo) simulation** on the `nvidia` GPU target:
-- Each trajectory samples a Pauli error at each noisy gate according to the
-  channel probabilities, then evolves the resulting pure state exactly.
-- The expected value is averaged over $N_\text{traj} = 2048$ trajectories.
-- Statistical error $\sim 1/\sqrt{N_\text{traj}} \approx 2.2\%$ relative.
+**Ideal evaluation:** `estimate_expected_value_observe(Theta)` — a single
+`cudaq.observe()` GPU call computing $\langle\psi|H|\psi\rangle$ via tensor
+contraction. Confirmed identical to the full statevector sumover-loop for
+noiseless circuits; used because it avoids the $O(2^{2n_y})$ Python loop.
 
-```python
-# cudaq_impl.py — estimate_expected_value_noisy_trajectory()
-result = cudaq.observe(
-    dqa_ansatz, hamiltonian,
-    ..., noise_model=noise_model, num_trajectories=2048)
-phi = result.expectation()
-```
+**Noisy evaluation:** `sample_ansatz(noise_model=..., shots=N_\text{shots})`
+followed by the **correct shortfall-penalty cost formula** (matching
+`cuda_q_script.py`):
+
+$$
+Q_\text{noisy}(y, \xi) = \sum_j c_y^{(j)} y_j \xi_j
+  + \max\!\bigl(0,\; w_d - \textstyle\sum_j y_j \xi_j\bigr) \cdot c_r
+$$
+
+The shortfall term $\max(0, w_d - \sum_j y_j \xi_j) \cdot c_r$ penalizes
+bitstrings where noise has caused fewer turbines to produce than demanded.
+This is essential: `_wind_scenario_cost()` in `cudaq_impl.py` **does not**
+include this penalty, causing $\phi_\text{noisy} < \phi_\text{ideal}$ for deep
+circuits where noise leaks significant probability into $|y| < w_d$ states.
+
+**Shots:** $N_\text{shots} = 2048$.
 
 ---
 
@@ -196,68 +204,91 @@ phi = result.expectation()
 
 ### 5.1 Summary table
 
-| $n_y$ | $\phi_\text{classical}$ | $\phi_\text{ideal}$ | $\varepsilon_\text{ideal}$ (%) | $\phi_\text{noisy}$ | $\varepsilon_\text{noisy}$ (%) | noise degradation (%) |
-|--------|--------------------------|----------------------|-------------------------------|----------------------|-------------------------------|------------------------|
-| 4  | 4.5125  | 5.1242  | 13.56 |  5.8287 | 29.17 | 13.75 |
-| 6  | 12.7806 | 14.2739 | 11.68 | 15.0487 | 17.75 |  5.43 |
-| 8  | 22.5526 | 24.2785 |  7.65 | 23.6547 |  4.89 |  2.57 |
-| 10 | 32.8557 | 34.7649 |  5.81 | 31.2268 |  4.96 | 10.18 |
+| $n_y$ | $\phi_\text{classical}$ | $\phi_\text{ideal}$ | $\varepsilon_\text{ideal}$ (%) | $\phi_\text{noisy}$ | $\varepsilon_\text{noisy}$ (%) | noise shift (%) |
+|--------|--------------------------|----------------------|-------------------------------|----------------------|-------------------------------|------------------|
+| 4  |  4.5125 |  4.6166 |  2.31 |  7.6544 | 69.63 | +65.80 |
+| 6  | 12.7806 | 12.8761 |  0.75 | 20.6255 | 61.38 | +60.18 |
+| 8  | 22.5526 | 22.7293 |  0.78 | 35.6980 | 58.29 | +57.06 |
+| 10 | 32.8557 | 33.5446 |  2.10 | 51.5785 | 56.99 | +53.76 |
 
 Definitions:
 - $\varepsilon = |\phi - \phi_\text{classical}| / \phi_\text{classical} \times 100\%$
-- noise degradation $= |\phi_\text{noisy} - \phi_\text{ideal}| / |\phi_\text{ideal}| \times 100\%$
+- noise shift $= (\phi_\text{noisy} - \phi_\text{ideal}) / \phi_\text{ideal} \times 100\%$ (signed; + = noise degraded result)
 
 ### 5.2 Plot
 
 ![Noise study result](noise_study_accuracy.png)
 
 Three panels:
-1. **Left** — absolute $\phi$ values: classical optimum, ideal DQA (linear
-   ramp), noisy DQA vs $n_y$.
-2. **Middle** — relative error vs classical for ideal and noisy.
-3. **Right** — pure noise degradation (ideal→noisy shift as % of ideal).
+1. **Left** — absolute $\phi$ values: classical optimum, ideal DQA (20 timesteps,
+   linear ramp, noiseless), noisy DQA vs $n_y$.
+2. **Middle** — relative error vs classical for ideal and noisy (timesteps=20
+   fixed for all sizes).
+3. **Right** — signed noise shift $(\phi_\text{noisy}-\phi_\text{ideal})/\phi_\text{ideal}$;
+   red bars = noise degraded result, blue = noise improved (with shortfall penalty).
 
 ---
 
 ## 6. Discussion
 
-### 6.1 Ideal DQA accuracy
+### 6.1 Ideal DQA accuracy with 20 timesteps
 
-Ideal DQA error decreases from 13.6% to 5.8% as $n_y$ grows from 4 to 10.
-This is expected: DQA time steps scale as `timesteps = n_y`, so larger systems
-have proportionally more adiabatic evolution and converge closer to the
-classical optimum.
+With `TIMESTEPS = 20` (mentor suggestion), ideal DQA errors are **below 3%**
+for all system sizes — a major improvement over the `timesteps = n_y` case
+(which gave 5–14% errors). The linear-ramp ansatz at 20 depth is sufficient
+for close adiabatic convergence for all sizes tested.
 
-Note that $\phi_\text{ideal} > \phi_\text{classical}$ for all sizes — the
-linear-ramp ansatz is not optimised, and the DQA circuit depth is insufficient
-for exact convergence to the ground state of $H_C$. COBYLA optimisation of
-angles (enabled via `USE_COBYLA = True`) would close this gap further.
+Note the slight uptick at n_y=10 (2.1% vs <1% for n_y=6,8): with 10 turbines
+and w_d=8, the optimal Hamming-weight subspace is very large, and the annealing
+path at fixed 20 steps may not be as efficient relative to the broader landscape.
 
-### 6.2 Noise degradation
+### 6.2 Noise degradation with 20 timesteps
 
-At the realistic $p_2 = 0.001$ noise level, the noise degradation is **2–14%**
-— modest enough that the qualitative ordering ($\phi_\text{ideal} \approx
-\phi_\text{classical}$) is preserved.
+With `TIMESTEPS = 20` and $p_2 = 0.001$, the noise degradation is **large
+(+54% to +66%) and monotonically decreasing** with $n_y$:
 
-The n_y=4 case shows the highest *relative* noise degradation (13.75%) despite
-having the fewest qubits. This arises because:
+This is now physically interpretable:
 
-1. $\phi_\text{classical} = 4.51$ is small (low-cost problem with $c_y \in
-   [0.1, 1.0]$), so any *absolute* noise shift looms large as a *relative* error.
-2. The $n_y=4$ circuit still has $O(n_y^2)$ two-qubit gates per DQA step
-   (from the Givens-rotation mixer), so total error per circuit execution is
-   not dramatically smaller than for $n_y=6$.
+1. **Circuit depth effect:** All sizes have 20 DQA timesteps but the number of
+   2-qubit gates per step scales as $O(n_y^2)$ (Givens-rotation mixer +
+   $n_y$ cost-operator CPhase gates). Total 2-qubit gate count
+   $\sim 20 \cdot n_y^2 / 2$. At $p_2 = 0.001$, the probability of *at least
+   one error* in the circuit is approximately:
 
-The n_y=10 degradation (10.18%) is larger than n_y=8 (2.57%) because the
-circuit is deeper (10 DQA steps vs 8), accumulating more gate errors.
+   | $n_y$ | ~2Q gates | $P(\geq 1 \text{ error})$ |
+   |--------|-----------|---------------------------|
+   | 4  | ~160  | ~15% |
+   | 6  | ~360  | ~30% |
+   | 8  | ~640  | ~47% |
+   | 10 | ~1000 | ~63% |
 
-### 6.3 Effect of $p_2$ choice
+2. **Shortfall cost scaling:** When noise causes $|y| < w_d$ (fewer turbines
+   committed), the shortfall penalty is $\max(0, w_d - \sum y_j\xi_j) \cdot c_r$.
+   The maximum possible shortfall is $w_d \cdot c_r$, but this scales with $w_d$
+   while $\phi_\text{classical}$ also scales — so the *relative* noise shift
+   decreases slightly with $n_y$ despite more gate errors.
 
-A previous run with $p_2 = 0.01$ produced 101% relative error for $n_y=4$ —
-confirming that this problem is sensitive to the noise magnitude when $\phi$ is
-small. The trajectory simulation was fully converged at $N_\text{traj}=8192$,
-ruling out sampling variance as the cause. For noise studies of this problem,
-$p_2 \leq 0.001$ is required for the results to be physically interpretable.
+### 6.3 Why timesteps = n_y was misleading
+
+With `timesteps = n_y`, the noise degradation appeared negligible (2–14%) and
+non-monotonic. The root cause was insufficient DQA expressivity for small n_y
+(only 4 steps for n_y=4), not circuit noise. The mentor correctly identified
+this as a barren-plateau / expressivity issue masking the noise signal.
+
+With `TIMESTEPS = 20`, the expressivity issue is resolved and noise now
+dominates the comparison — which is the physically meaningful result.
+
+### 6.4 Bug: missing shortfall penalty in `_wind_scenario_cost`
+
+`CudaqQAEOptimizer._wind_scenario_cost()` does not include a shortfall
+penalty for bitstrings where $|y| < w_d$. The Qiskit reference
+`BinaryNestedOptimizer.wind_scenario_cost()` correctly adds
+$\max(0, w_d - \sum_j y_j\xi_j) \cdot c_r$. Without this penalty, noisy
+bitstrings with few turbines committed appear artificially cheap, causing
+$\phi_\text{noisy} < \phi_\text{ideal}$ for deep circuits.
+
+This study uses the correct formula directly in post-processing, matching
+`cuda_q_script.py`. The underlying `cudaq_impl.py` bug is tracked separately.
 
 ---
 
@@ -280,4 +311,4 @@ source /nopt/nrel/apps/gpu_stack/software/qiskit/aer-gpu/venv/bin/activate
 - `qiskit_impl/noise_study_accuracy.png` — three-panel figure
 - `qiskit_impl/run_noise_study.py` — reproducing script
 
-**Commit:** `b3814c4` → `fix/cuda-q-script` branch
+**Commit:** `64aacbb` → `fix/cuda-q-script` branch
