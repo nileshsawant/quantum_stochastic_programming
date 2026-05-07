@@ -577,8 +577,10 @@ def build_depolarizing_noise_model(p1: float = 0.001,
 
     # ---- single-qubit depolarization ----------------------------------
     dep1 = cudaq.Depolarization1(p1)
-    _single_qubit_gates = ['h', 'x', 'y', 'z', 'rx', 'ry', 'rz', 't', 's',
-                           'tdg', 'sdg', 'r1']
+    # Gate names recognised by cudaq.NoiseModel on the nvidia target.
+    # Note: 'tdg' and 'sdg' are NOT valid — CUDA-Q does not expose adjoint
+    # gates as separately named ops for noise channels.
+    _single_qubit_gates = ['h', 'x', 'y', 'z', 'rx', 'ry', 'rz', 't', 's', 'r1']
     for gate in _single_qubit_gates:
         noise.add_all_qubit_channel(gate, dep1)
 
@@ -586,9 +588,10 @@ def build_depolarizing_noise_model(p1: float = 0.001,
     # cudaq.Depolarization2 applies one of {IX,IY,...,ZZ} with equal
     # probability p2/15 each; state is unchanged with prob 1-p2.
     dep2 = cudaq.Depolarization2(p2)
-    _two_qubit_gates = ['cx', 'cnot', 'cy', 'cz', 'swap',
-                        'rxx', 'ryy', 'rzz',
-                        'cry', 'crx', 'crz', 'cphase']
+    # Only gate names recognised by the nvidia target are listed.
+    # 'cnot','swap','cphase','rxx','ryy' are NOT valid on nvidia.
+    # The DQA kernel uses: cx (fswap decomp), cr1 (cost_operator), cry (dicke).
+    _two_qubit_gates = ['cx', 'cy', 'cz', 'crz', 'crx', 'cry', 'cr1']
     for gate in _two_qubit_gates:
         noise.add_all_qubit_channel(gate, dep2)
 
@@ -670,6 +673,57 @@ class CudaqQAEOptimizer:
             noise_model=self.noise_model)
         total = sum(counts.values())
         return {k: v / total for k, v in counts.items()}
+
+    def sample_ansatz_mqpu(self, thetas: list, total_shots: int = 4096,
+                           n_qpus: int = None) -> dict:
+        """Sample the DQA ansatz across multiple GPUs using mqpu shot splitting.
+
+        Divides ``total_shots`` evenly across all available virtual QPUs
+        (one per GPU) using ``cudaq.sample_async``, then merges the raw counts.
+
+        Requires the target to be set to mqpu before calling::
+
+            cudaq.set_target('nvidia', option='mqpu')
+
+        Args:
+            thetas:       Alternating [gamma, beta, ...] DQA angles.
+            total_shots:  Total number of shots summed across all GPUs.
+            n_qpus:       Number of virtual QPUs to use. Defaults to
+                          ``cudaq.num_available_gpus()``.
+
+        Returns:
+            Dict {bitstring: probability} — normalised over all merged shots.
+        """
+        n_available = cudaq.num_available_gpus()
+        if n_qpus is None:
+            n_qpus = n_available
+        else:
+            n_qpus = min(n_qpus, n_available)
+
+        shots_per_qpu = total_shots // n_qpus
+        remainder     = total_shots - shots_per_qpu * n_qpus
+        n_steps       = len(thetas) // 2
+
+        # Dispatch all GPUs simultaneously
+        futures = []
+        for i in range(n_qpus):
+            s = shots_per_qpu + (remainder if i == n_qpus - 1 else 0)
+            futures.append(cudaq.sample_async(
+                dqa_ansatz,
+                self.dang, self.c_y, self.c_r, self.cost_norm, self.w_d,
+                thetas, n_steps, self.n_y,
+                shots_count=s,
+                noise_model=self.noise_model,
+                qpu_id=i))
+
+        # Merge raw counts from all GPUs
+        merged: dict = {}
+        for f in futures:
+            for bitstring, count in f.get().items():
+                merged[bitstring] = merged.get(bitstring, 0) + count
+
+        total = sum(merged.values())
+        return {k: v / total for k, v in merged.items()}
 
     def get_statevector(self, thetas: list) -> np.ndarray:
         """Return the full complex amplitude vector for the DQA ansatz.

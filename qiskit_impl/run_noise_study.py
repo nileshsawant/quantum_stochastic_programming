@@ -36,9 +36,10 @@ import cudaq
 from cudaq_impl import CudaqQAEOptimizer, build_depolarizing_noise_model
 from binary_optimizer import BinaryNestedOptimizer
 
-cudaq.set_target('nvidia')
-print(f'CUDA-Q  target : {cudaq.get_target().name}')
-print(f'GPUs available : {cudaq.num_available_gpus()}')
+cudaq.set_target('nvidia', option='mqpu')
+N_QPUS = cudaq.num_available_gpus()
+print(f'CUDA-Q  target : {cudaq.get_target().name}  (mqpu, {N_QPUS} virtual QPUs)')
+print(f'GPUs available : {N_QPUS}')
 
 # ── NOISE MODEL ───────────────────────────────────────────────────────────────
 P1, P2   = 0.0001, 0.001   # realistic near-term: p1=0.01%, p2=0.1% per gate
@@ -156,7 +157,7 @@ for ny, thetas in optimized_thetas.items():
         c_x=C_X, c_y=cfg['c_y'], c_r=cfg['c_r'],
         n_y=ny, w_d=cfg['w_d'], cost_norm=cfg['cost_norm'], noise_model=noise_model)
     t0     = time.perf_counter()
-    counts = opt_n.sample_ansatz(cfg['theta0'], shots=N_SHOTS)
+    counts = opt_n.sample_ansatz_mqpu(cfg['theta0'], total_shots=N_SHOTS, n_qpus=N_QPUS)
     phi_n  = 0.0
     c_y_arr = np.array(cfg['c_y'])
     for bstr, prob in counts.items():
@@ -172,7 +173,7 @@ for ny, thetas in optimized_thetas.items():
     ref = classical_phi[ny]
     deg = (phi_n - phi_i) / phi_i * 100  # signed: + means noise worsened result
     print(f'  Ideal : φ={phi_i:.4f}  vs classical err={abs(phi_i-ref)/ref*100:.2f}%  ({dt_i*1e3:.0f} ms)')
-    print(f'  Noisy : φ={phi_n:.4f}  vs classical err={abs(phi_n-ref)/ref*100:.2f}%  ({dt_n*1e3:.0f} ms)')
+    print(f'  Noisy : φ={phi_n:.4f}  vs classical err={abs(phi_n-ref)/ref*100:.2f}%  ({dt_n*1e3:.0f} ms, {N_SHOTS} shots split across {N_QPUS} QPUs)')
     print(f'  Noise shift: {deg:+.2f}% (+ = degraded, - = improved)')
 
 # ── PLOT ──────────────────────────────────────────────────────────────────────
