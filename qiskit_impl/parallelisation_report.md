@@ -214,12 +214,45 @@ srun --jobid=$JOBID \
 # CUDA_VISIBLE_DEVICES=SLURM_LOCALID before importing cudaq.
 ```
 
-### Step 5 — Regenerate the plot
+### Step 5 — 8-GPU mgpu (cuStateVec multi-GPU, n_y = 14–18)
+
+The `nvidia mgpu` target shards the statevector across all visible GPUs using
+cuStateVec + GPU-aware MPI. On Cray systems this requires special env vars that
+**must be set before Python starts** — use the provided wrapper:
+
+```bash
+JOBID=$(squeue --me --format='%i' --noheader | head -1)
+WRAPPER=$IMPL/run_mgpu.sh
+
+# Quick GHZ smoke test (32 qubits, 2 GPUs on 1 node)
+srun --jobid=$JOBID -N 1 --ntasks=2 --gpus-per-node=2 \
+    $WRAPPER $IMPL/test_mgpu.py mgpu
+
+# Full DQA benchmark — noiseless n_y=16,17,18 across 8 GPUs (2 nodes × 4 GPUs)
+srun --jobid=$JOBID -N 2 --ntasks-per-node=4 --gpus-per-node=4 \
+    $WRAPPER $IMPL/bench_mgpu_dqa.py --ny 16 17 18 --shots 256 \
+    2>&1 | tee /tmp/bench_mgpu_ideal.log
+
+# Noisy n_y=14 on 8 GPUs (for comparison with mpi4py)
+srun --jobid=$JOBID -N 2 --ntasks-per-node=4 --gpus-per-node=4 \
+    $WRAPPER $IMPL/bench_mgpu_dqa.py --ny 14 --shots 256 --noisy \
+    2>&1 | tee /tmp/bench_mgpu_noisy.log
+```
+
+> **Cray MPICH GTL requirement**: `run_mgpu.sh` sets
+> `MPICH_GPU_SUPPORT_ENABLED=1`, `LD_LIBRARY_PATH=/nopt/cuda/12.4/lib64`,
+> and `LD_PRELOAD=libmpi_gtl_cuda.so` before exec-ing Python.
+> Without this, cuStateVec's `SVSwapWorkerExecute` crashes with
+> `process_vm_readv: Bad address` (Cray SHM transport reading GPU pointers).
+> See `module help qiskit/aer-gpu` for details.
+
+### Step 6 — Regenerate the plots
 
 ```bash
 # On a GPU node (matplotlib needs display-less Agg backend):
 ssh <node1> "cd $IMPL && $PYTHON parallelisation_report.py"
-# Output: parallelisation_study.png
+# Outputs: parallelisation_study.png
+#          parallelisation_mgpu_comparison.png
 ```
 
 ### Notes for reproducibility
