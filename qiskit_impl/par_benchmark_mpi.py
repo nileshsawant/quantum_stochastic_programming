@@ -47,7 +47,7 @@ N_SHOTS   = 256
 TIMESTEPS = 20
 P1, P2    = 0.0001, 0.001
 C_R, C_X  = 10.0, [3.]
-NY_LIST   = [10, 12, 14]
+NY_LIST   = [14]   # n_y>=16 (>=32 qubits) OOM on H100 (68.7 GB/trajectory)
 
 noise_model = build_depolarizing_noise_model(p1=P1, p2=P2)
 
@@ -65,7 +65,7 @@ def make_opt(ny):
 
 if rank == 0:
     print(f'\n── 4-GPU (2 nodes x 2 GPUs) mpi4py benchmark ──')
-    print(f'   ranks={size}  N_SHOTS={N_SHOTS}\n')
+    print(f'   ranks={size}  N_SHOTS={N_SHOTS}  ny={NY_LIST}\n')
 
 results_4gpu = {}
 
@@ -95,32 +95,18 @@ for ny in NY_LIST:
         results_4gpu[ny] = round(dt, 2)
         print(f'  n_y={ny:2d}  qubits={2*ny:2d}  {dt:.1f}s', flush=True)
 
-# 1-GPU and 2-GPU reference timings (same 256 shots, same hardware)
-T1 = {10: 46.9, 12: 69.2, 14: 808.1}
-T2 = {10: 24.9, 12: 36.1, 14: 393.7}
-
 if rank == 0:
-    print(f"\n{'n_y':>4}  {'qubits':>6}  {'1-GPU':>8}  {'2-GPU':>8}  "
-          f"{'4-GPU':>8}  {'Su_2x':>7}  {'Su_4x':>7}  {'Eff_4x':>8}")
-    print('-' * 70)
+    print(f"\n{'n_y':>4}  {'qubits':>6}  {'4-GPU(s)':>10}")
+    print('-' * 28)
     for ny in NY_LIST:
-        if ny not in results_4gpu:
-            continue
-        t1, t2, t4 = T1[ny], T2[ny], results_4gpu[ny]
-        su2 = t1 / t2
-        su4 = t1 / t4
-        eff = su4 / size * 100
-        print(f'{ny:>4}  {2*ny:>6}  {t1:>8.1f}s  {t2:>8.1f}s  '
-              f'{t4:>8.1f}s  {su2:>7.2f}x  {su4:>7.2f}x  {eff:>7.0f}%')
+        if ny in results_4gpu:
+            print(f"{ny:>4}  {2*ny:>6}  {results_4gpu[ny]:>10.1f}")
 
-    out = {ny: {'t1_s': T1[ny], 't2_s': T2[ny], 't4_s': results_4gpu[ny],
-                'speedup_2gpu': round(T1[ny]/T2[ny], 3),
-                'speedup_4gpu': round(T1[ny]/results_4gpu[ny], 3),
-                'efficiency_4gpu_pct': round(T1[ny]/results_4gpu[ny]/size*100, 1)}
-           for ny in NY_LIST if ny in results_4gpu}
     fname = os.path.join(_QISKIT_IMPL, 'par_benchmark_mpi_results.json')
     with open(fname, 'w') as f:
-        json.dump(out, f, indent=2)
+        json.dump({'n_shots': N_SHOTS, 'n_gpus': size,
+                   'timings': {str(ny): results_4gpu[ny]
+                               for ny in NY_LIST if ny in results_4gpu}}, f, indent=2)
     print(f'\nResults -> {fname}')
 
 MPI.Finalize()
