@@ -130,7 +130,9 @@ a cached binary. In a fair warm comparison (all configs warmed up), expect
 
 ---
 
-## Figure
+## Figures
+
+### Figure 1 — Shot-splitting strategies (noisy, n_y = 4–14)
 
 ![Parallelisation study](parallelisation_study.png)
 
@@ -139,6 +141,18 @@ Three panels (left to right):
    OOM region annotated for n_y ≥ 16.
 2. **Speedup** (n_y=10–14): 2-GPU vs 4-GPU paired bars against ideal dashed lines.
 3. **Parallel efficiency** (n_y=10–14): colour-coded green ≥ 80%, yellow 50–80%.
+
+### Figure 2 — mgpu strategy comparison (n_y = 14 noisy, n_y = 16 ideal)
+
+![mgpu strategy comparison](parallelisation_mgpu_comparison.png)
+
+Two panels:
+1. **n_y=14 noisy (28 qubits, 256 shots)**: all four strategies side by side.
+   mpi4py (shot-split, 4 GPUs) is fastest at 144.3 s (5.60×); mgpu (8 GPUs,
+   statevector-sharding) reaches 198.4 s (4.07×) — slower because shots run
+   sequentially rather than in parallel.
+2. **n_y=16 (32 qubits)**: single-GPU strategies are OOM (68.7 GB/trajectory);
+   8-GPU mgpu is the only viable approach, completing in 12.6 s (noiseless).
 
 ---
 
