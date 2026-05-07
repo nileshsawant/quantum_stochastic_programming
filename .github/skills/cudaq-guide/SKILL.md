@@ -292,117 +292,78 @@ See the docs above for complete working examples of both patterns.
 
 ---
 
-## Porting Qiskit Circuits to CUDA-Q
+## Porting Circuits from Another Framework to CUDA-Q
 
-When translating a Qiskit circuit or gate to CUDA-Q, silent correctness errors
-are common. The circuit compiles and runs without errors but produces wrong
-results — often dismissed as numerical noise or shot noise. Follow this
-checklist to catch them early.
+When translating circuits or gates from any framework (Qiskit, Cirq,
+PennyLane, …) to CUDA-Q, silent correctness errors are common. The circuit
+compiles and runs without error but produces wrong results — often dismissed
+as numerical noise or shot noise. The same two checks apply regardless of
+the source framework.
 
-### Rule 1: validate every ported gate with a statevector test
+### Rule 1: validate every new gate with a unitary test
 
-Before using a ported gate in a larger circuit, write a unit test that applies
-it in isolation and compares the resulting statevector (or unitary matrix)
-against the Qiskit reference.
+Before integrating any ported or hand-decomposed gate into a larger circuit,
+compare its unitary matrix against the reference from the source framework.
+See the ready-to-use template:
+`templates/gate_validation.py` in this skill folder.
+
+Key points:
+- Use `cudaq.get_unitary(kernel, *params)` with `qpp-cpu` — no GPU needed.
+- Compare absolute values `|U_cudaq|` vs `|U_ref|` to ignore global phase.
+- Use a **non-trivial parameter value** (e.g. `beta=0.5`, not `0` or `π`);
+  trivial values can mask missing phase terms.
+- Run this test for **every** non-trivial gate before using it in a circuit.
+  Errors compound over layers and look like noise at the circuit level.
+
+Common failure mode: gates defined by a product of Pauli exponentials
+(parametric swap-family, XY, iSWAP gates) often carry an odd-parity phase
+that naive Rxx+Ryy decompositions omit. Always derive the decomposition from
+the full unitary definition, not from a partial circuit identity. The unitary
+test will catch this immediately.
+
+### Rule 2: verify bit ordering for any new framework
+
+Every quantum framework has its own qubit-to-bitstring convention. Mismatched
+indexing causes scrambled register assignments that are hard to detect without
+an explicit test. The template `templates/gate_validation.py` includes a
+bit-ordering check (prepare a known basis state, assert the correct bitstring).
+
+Run it once when starting work with CUDA-Q or when upgrading to a new version.
+For reference, CUDA-Q uses **big-endian** (qubit 0 = leftmost/MSB in
+bitstrings), while many other frameworks use little-endian.
+
+### Rule 3: write kernels generically from the start
+
+Write CUDA-Q kernels to be parameterized over system size (number of qubits,
+layers, register partitions) rather than hard-coding those values. Retrofitting
+general kernels later is error-prone and time-consuming.
 
 ```python
-import cudaq, math, numpy as np
-from qiskit.circuit.library import SwapGate
-
-# --- CUDA-Q kernel under test ---
+# Prefer: parameterized over n_qubits
 @cudaq.kernel
-def my_gate(beta: float, q0: cudaq.qubit, q1: cudaq.qubit):
-    # ... your implementation ...
-    pass
+def ansatz(params: list[float], n_qubits: int, n_layers: int):
+    q = cudaq.qvector(n_qubits)
+    for layer in range(n_layers):
+        for i in range(n_qubits):
+            ry(params[layer * n_qubits + i], q[i])
+        for i in range(n_qubits - 1):
+            cx(q[i], q[i + 1])
 
-# Reference unitary from Qiskit
-qiskit_unitary = np.array(SwapGate().power(0.5).to_matrix())
-
-# CUDA-Q unitary
-cudaq.set_target("qpp-cpu")
-cudaq_unitary = np.array(cudaq.get_unitary(my_gate, 0.5))
-
-# Compare (up to global phase)
-assert np.allclose(np.abs(cudaq_unitary), np.abs(qiskit_unitary), atol=1e-6), \
-    "Gate unitary mismatch — porting error!"
-```
-
-Do this for **every** non-trivial gate before integrating it into the full
-ansatz. Small errors compound over many layers and produce results that look
-like noise but are not.
-
-### Rule 2: common porting error — missing phases in parametric gates
-
-Gates defined by a product of Pauli exponentials (e.g. fSWAP, iSWAP, XY gate
-families) often have an **odd-parity phase** term that Qiskit includes but
-naive decompositions omit. The symptom is a systematic bias in expectation
-values that grows with circuit depth, indistinguishable from gate noise in
-single-shot checks.
-
-Example: `SwapGate().power(beta)` in Qiskit. A naive CUDA-Q port using only
-Rxx and Ryy terms is **missing** the required CX–Rz–CX phase correction:
-
-```python
+# Avoid: hard-coded size
 @cudaq.kernel
-def fswap_power(beta: float, q0: cudaq.qubit, q1: cudaq.qubit):
-    angle = beta * math.pi / 2.0
-
-    # Rxx(angle)
-    h(q0);  h(q1)
-    cx(q0, q1);  rz(angle, q1);  cx(q0, q1)
-    h(q0);  h(q1)
-
-    # Ryy(angle)
-    rx(math.pi / 2.0, q0);  rx(math.pi / 2.0, q1)
-    cx(q0, q1);  rz(angle, q1);  cx(q0, q1)
-    rx(-math.pi / 2.0, q0);  rx(-math.pi / 2.0, q1)
-
-    # Odd-parity phase — REQUIRED to match Qiskit's SwapGate().power(beta)
-    # Omitting these three lines is the most common porting mistake for this gate
-    cx(q0, q1)
-    rz(angle, q1)
-    cx(q0, q1)
+def ansatz_4q(params: list[float]):
+    q = cudaq.qvector(4)   # must rewrite for every system size
+    ...
 ```
-
-Always derive the full decomposition from the gate's unitary definition, not
-from a partial circuit identity.
-
-### Rule 3: bit ordering is reversed between Qiskit and CUDA-Q
-
-Qiskit uses **little-endian** ordering: qubit 0 is the **least significant bit**
-(rightmost) in bitstrings. CUDA-Q uses **big-endian** ordering: qubit 0 is the
-**most significant bit** (leftmost).
-
-| Framework | Bitstring for |0⟩⊗|1⟩ (q0=0, q1=1) | Position of q0 |
-|-----------|---------------------------------------|----------------|
-| Qiskit    | `"10"` | LSB (right) |
-| CUDA-Q    | `"01"` | MSB (left)  |
-
-When post-processing measurement bitstrings from CUDA-Q, index from the left:
-```python
-# CUDA-Q: bitstring[0] is qubit 0
-q0_val = int(bitstring[0])
-q1_val = int(bitstring[1])
-
-# Qiskit: bitstring[-1] is qubit 0
-q0_val = int(bitstring[-1])
-q1_val = int(bitstring[-2])
-```
-
-Mismatched indexing causes scrambled register assignments that are hard to
-detect without a controlled test (e.g. prepare a known basis state and assert
-the correct bit positions).
 
 ### Porting checklist
 
-- [ ] Unit-test each ported gate's unitary against the Qiskit reference
-- [ ] Confirm odd-parity / phase terms are included in all parametric gates
-- [ ] Verify bitstring index conventions (big- vs little-endian) in all
-      post-processing code
-- [ ] Prepare a known basis state (e.g. |01⟩) and assert the correct bitstring
-      is returned before running the full ansatz
-- [ ] Cross-check expectation values / sample distributions for a small
-      system (2–4 qubits) against Qiskit before scaling up
+- [ ] Run `templates/gate_validation.py` for every new or ported gate
+- [ ] Include a non-trivial parameter value in the unitary test
+- [ ] Run the bit-ordering check once per framework / CUDA-Q version upgrade
+- [ ] Verify full-circuit output against the source framework for a small
+      system (2–4 qubits) before scaling up
+- [ ] Write kernels parameterized over system size from the start
 
 ---
 
@@ -413,35 +374,58 @@ the correct bit positions).
 | Method | API | Speed | Noise support | Notes |
 |--------|-----|-------|---------------|-------|
 | Statevector loop | `cudaq.get_state()` + Python loop | Slow — iterates 2ⁿ states in Python | No | Avoid for n ≥ 8 |
-| Pauli observe | `cudaq.observe()` with spin Hamiltonian | Fast — single GPU call | **No** | Preferred for noiseless evaluation |
-| Shot sampling | `cudaq.sample()` + post-processing | Medium | **Yes** | Required for noisy evaluation |
+| Pauli observe (density matrix) | `cudaq.observe()` with noise model | Exact under noise | **Yes** | Requires `nvidia-mgpu` or `dm` target |
+| Shot-based observe | `cudaq.observe()` with `shots_count` | Medium | **Yes** | Works on any noisy target |
+| Shot sampling | `cudaq.sample()` + post-processing | Medium | **Yes** | Needed when penalties cannot be expressed as Pauli terms |
 
-### Do not use `cudaq.observe()` for constraint-penalized cost functions under noise
+### Using `cudaq.observe()` with noise
 
-`cudaq.observe()` computes a raw Pauli expectation value. It knows nothing
-about constraint penalties defined in post-processing. If your cost function
-adds a penalty for bitstrings that violate constraints (e.g. Hamming-weight
-constraints), those penalties are absent when using `observe()` — so
-off-constraint bitstrings appear artificially cheap, and you may observe
-`cost_noisy < cost_ideal`, which is physically wrong.
+`cudaq.observe()` supports noise in two ways:
 
-**Always use shot sampling + manual post-processing for noisy evaluation of
-penalized cost functions:**
+1. **Density-matrix target** — set `cudaq.set_target("dm")` (or `nvidia-mgpu`
+   with noise); `cudaq.observe()` then computes the exact noisy expectation
+   value via the density matrix.
+2. **Shot-based** — pass `shots_count=N` to `cudaq.observe()`; the kernel is
+   sampled N times under the noise model and the expectation value is
+   estimated from those shots.
 
 ```python
-# cudaq.sample() with noise_model set on the target
-counts = cudaq.sample(kernel, *params, noise_model=noise_model, shots_count=N_SHOTS)
-
-cost_noisy = 0.0
-for bitstring, count in counts.items():
-    prob = count / N_SHOTS
-    # Apply the FULL cost function including all penalty terms
-    cost_noisy += full_cost(bitstring) * prob
+# Shot-based noisy observe
+result = cudaq.observe(kernel, hamiltonian, *params,
+                       noise_model=noise_model, shots_count=N_SHOTS)
+expectation = result.expectation()
 ```
 
-Ensure `full_cost()` exactly matches the cost function used for the noiseless
-reference — any missing penalty term creates a systematic downward bias in
-the noisy estimate.
+### Encoding constraint penalties in the Hamiltonian
+
+If your cost function includes constraint penalties (e.g. Hamming-weight
+penalties, feasibility constraints), these can often be encoded directly in
+the spin Hamiltonian as additional Pauli terms, allowing `cudaq.observe()` to
+be used for noisy evaluation without any post-processing:
+
+```python
+# Example: add a penalty λ·(Σ Zᵢ - k)² to the cost Hamiltonian
+# This is exact for quadratic constraints; higher-order constraints
+# require more Pauli terms but are still expressible.
+cost_ham = objective_hamiltonian + penalty_weight * constraint_hamiltonian
+result = cudaq.observe(kernel, cost_ham, *params, noise_model=noise_model,
+                       shots_count=N_SHOTS)
+```
+
+When encoding into the Hamiltonian is not straightforward (e.g. non-linear
+penalties, penalties involving classical post-selection), use shot sampling
++ manual post-processing instead:
+
+```python
+counts = cudaq.sample(kernel, *params, noise_model=noise_model,
+                      shots_count=N_SHOTS)
+cost_noisy = sum(full_cost(bs) * cnt / N_SHOTS for bs, cnt in counts.items())
+```
+
+In either case, ensure the noisy and noiseless evaluations use the **same**
+cost function (including all penalty terms). A missing penalty term causes
+off-constraint bitstrings to appear cheap under noise, producing
+`cost_noisy < cost_ideal` — a physically wrong result.
 
 ### Noise model parameters
 
