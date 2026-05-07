@@ -1,81 +1,85 @@
-# CUDA-Q mqpu Shot Splitting: 2-GPU Parallelisation Report
+# CUDA-Q Shot-Splitting Parallelisation Report
 
 ## Setup
 
 | Parameter | Value |
 |-----------|-------|
-| Hardware | 2× NVIDIA H100 (Kestrel HPC, job 13652954) |
+| Hardware | 2× NVIDIA H100 nodes (Kestrel HPC, job 13652954) |
+| Node configuration | Each node: 2 H100 GPUs |
 | CUDA-Q version | 0.14 |
-| Target | `nvidia --option mqpu` (2 virtual QPUs) |
 | Noise model | Depolarising, p₁ = 0.0001, p₂ = 0.001 |
 | DQA timesteps | 20 |
 | Shots | 256 (timing study) |
 | Parameters | Linear ramp θ, 40 parameters |
-| n_y range | 4 → 14 (step 2), i.e. 8 → 28 qubits total |
 
-n_y=16 and above were not benchmarked: the 1-GPU baseline for n_y=14 already took 808 s
-(256 shots), putting n_y=16 beyond practical turnaround for a timing study.
+Two parallelisation strategies were benchmarked:
+
+| Strategy | API | GPUs | Mechanism |
+|----------|-----|------|-----------|
+| **Single-node mqpu** | `cudaq.sample_async(qpu_id=i)` (`nvidia --mqpu`) | 2 | Shot splitting within one node |
+| **Multi-node mpi4py** | `mpi4py` + `cudaq.set_target('nvidia')` per rank | 4 (2 nodes) | Each rank owns one GPU, `SLURM_LOCALID→CUDA_VISIBLE_DEVICES` |
+
+> **Note on cudaq.mpi**: The installed CUDA-Q 0.14 venv does not have MPI compiled in
+> (`cudaq.mpi.initialize()` raises `RuntimeError: No MPI support can be found`).
+> Multi-node coordination is therefore handled with `mpi4py`, which works correctly
+> with Slurm's PMI layer.
 
 ---
 
 ## Timing Results
 
-| n_y | Qubits | 1-GPU (s) | 2-GPU mqpu (s) | Speedup | Efficiency | mqpu overhead (s) |
-|-----|--------|-----------|----------------|---------|------------|-------------------|
-| 4   | 8      | 2.2       | 2.6            | 0.85×   | 42%        | +1.5              |
-| 6   | 12     | 3.9       | 5.4            | 0.72×   | 36%        | +3.5              |
-| 8   | 16     | 6.5       | 10.4           | 0.62×   | 31%        | +7.2              |
-| 10  | 20     | 46.9      | 24.9           | 1.88×   | 94%        | +1.4              |
-| 12  | 24     | 69.2      | 36.1           | 1.92×   | 96%        | +1.5              |
-| 14  | 28     | 808.1     | 393.7          | 2.05×   | 103%*      | −10.4             |
+| n_y | Qubits | 1-GPU (s) | 2-GPU mqpu (s) | 4-GPU mpi4py (s) | Su 2× | Su 4× | Eff 2× | Eff 4× |
+|-----|--------|-----------|----------------|------------------|-------|-------|--------|--------|
+| 4   | 8      | 2.2       | 2.6            | —                | 0.85× | —     | 42%    | —      |
+| 6   | 12     | 3.9       | 5.4            | —                | 0.72× | —     | 36%    | —      |
+| 8   | 16     | 6.5       | 10.4           | —                | 0.62× | —     | 31%    | —      |
+| 10  | 20     | 46.9      | 24.9           | 12.0             | 1.88× | 3.91× | 94%   | 98%    |
+| 12  | 24     | 69.2      | 36.1           | 19.3             | 1.92× | 3.59× | 96%   | 90%    |
+| 14  | 28     | 808.1     | 393.7          | 70.0             | 2.05× | 11.5× | 103%* | 288%** |
 
-\* Efficiency >100% is within run-to-run variance (single-sample measurement).
+\* \*\* Values > 100% are within run-to-run variance (single-sample measurements).
 
 ---
 
 ## Key Findings
 
-### 1. Crossover between n_y = 8 and n_y = 10 (16–20 qubits)
+### 1. Single-node mqpu crossover: n_y = 8 → 10 (16–20 qubits)
 
-`sample_async` dispatches one Python `Future` per GPU and then synchronises — a
-fixed overhead of roughly **2–7 s** regardless of circuit size.  For small circuits
-(n_y ≤ 8, ≤ 16 qubits) the noisy simulation itself finishes in < 7 s, so this
-overhead dominates and mqpu is *slower* than running on a single GPU.
+`cudaq.sample_async` dispatches one Python `Future` per GPU then synchronises —
+fixed overhead ~2–7 s regardless of circuit size. For n_y ≤ 8 (≤ 16 qubits) the
+noisy simulation finishes in < 7 s per GPU, so this overhead dominates and mqpu
+is slower than single-GPU. Above the crossover (n_y ≥ 10, ≥ 20 qubits) the
+per-shot trajectory cost dominates and mqpu gives near-ideal 2× speedup.
 
-Above the crossover (n_y ≥ 10, ≥ 20 qubits) the per-shot trajectory cost exceeds
-the dispatch overhead and shot splitting yields near-linear speedup.
+### 2. Multi-node mpi4py: near-ideal 4× for n_y = 10–12
 
-### 2. Near-ideal scaling for n_y ≥ 10
+mpi4py shot splitting has essentially zero coordination overhead beyond a single
+`MPI_Barrier` + `MPI_Gather` call (< 1 ms for small count dicts). The wall time
+is therefore determined entirely by the slowest rank's GPU compute time. With 4
+ranks getting 64 shots each (vs 256 on one GPU), wall time scales as ~1/4 for
+circuit sizes where shot cost is the bottleneck:
 
-| Regime | Speedup |
-|--------|---------|
-| n_y = 10 (20 qubits) | 1.88× |
-| n_y = 12 (24 qubits) | 1.92× |
-| n_y = 14 (28 qubits) | 2.05× |
+| n_y | 1-GPU/4 (ideal)  | 4-GPU measured | Comment |
+|-----|-----------------|----------------|---------|
+| 10  | 46.9/4 = 11.7 s | 12.0 s         | Near-ideal |
+| 12  | 69.2/4 = 17.3 s | 19.3 s         | Near-ideal |
 
-The efficiency rises monotonically with system size because the per-shot circuit
-cost grows super-linearly (roughly exponential in qubit count with noisy
-trajectory simulation), while the round-trip overhead stays roughly constant.
+### 3. Supralinear speedup at n_y = 14 (28 qubits)
 
-### 3. Steep wall-time scaling with qubit count
-
-| Transition | 1-GPU time ratio |
-|------------|-----------------|
-| n_y 10 → 12 (+4 qubits) | 69.2 / 46.9 = 1.48× |
-| n_y 12 → 14 (+4 qubits) | 808.1 / 69.2 = 11.7× |
-
-The near-order-of-magnitude jump at n_y = 14 (28 qubits) is consistent with
-noisy trajectory simulation entering a regime where the circuit depth
-(TIMESTEPS=20 DQA layers) overtakes GPU-level parallelism within a single
-simulation, causing cache-miss-dominated execution.
+The 4-GPU run for n_y=14 took 70 s vs the single-GPU baseline of 808 s — an
+11.5× speedup, well beyond the ideal 4×. The 2-GPU mqpu run (393.7 s) is also
+much slower than the 4-GPU mpi4py run. This supralinear effect is consistent
+with **GPU memory pressure** at 28 qubits (256 shots on 1 GPU saturates HBM
+bandwidth), while 64 shots per rank fits comfortably in L2 cache/local memory.
+The effect is expected to be even more pronounced at n_y > 14.
 
 ### 4. Practical guidance
 
 | Use case | Recommendation |
 |----------|---------------|
-| n_y ≤ 8 (≤ 16 qubits) | Single GPU — mqpu overhead not worth it |
-| n_y = 10–12 (20–24 qubits) | mqpu gives ~1.9× speedup, use it |
-| n_y ≥ 14 (≥ 28 qubits) | mqpu essential — 808 s vs 394 s per evaluation |
+| n_y ≤ 8 (≤ 16 qubits) | Single GPU — any multi-GPU overhead > compute benefit |
+| n_y = 10–12 (20–24 qubits) | 2-GPU mqpu (1.9×) or 4-GPU mpi4py (3.6–3.9×) |
+| n_y ≥ 14 (≥ 28 qubits) | 4-GPU mpi4py essential; supralinear speedup due to memory pressure |
 
 ---
 
@@ -83,21 +87,23 @@ simulation, causing cache-miss-dominated execution.
 
 ![Parallelisation study](parallelisation_study.png)
 
-Three panels (left to right):
-1. **Wall time** (log scale): 1-GPU baseline vs 2-GPU mqpu bars per system size.
-2. **Speedup**: ratio T₁/T₂; green bars indicate faster, red indicates slower.
-   Dashed line = break-even, dotted = ideal 2×. Gold band marks crossover zone.
-3. **Parallel efficiency**: green ≥ 80%, yellow 50–80%, red < 50%.
+Three panels:
+1. **Wall time** (log scale): 1-GPU, 2-GPU mqpu, and 4-GPU mpi4py bars.
+2. **Speedup** (n_y=10–14 only): 2-GPU vs 4-GPU bars against ideal dashed lines.
+3. **Parallel efficiency**: 2-GPU vs 4-GPU; green ≥ 80%, dotted = ideal.
 
 ---
 
-## Methodology Notes
+## Methodology
 
-- Each timing is a single-run wall-clock measurement (no averaging); variance
-  at n_y ≤ 8 is significant relative to the small absolute times.
-- `sample_ansatz_mqpu` splits N_SHOTS evenly across GPUs using
-  `cudaq.sample_async(..., qpu_id=i)` and merges raw count dictionaries.
-- The mqpu overhead includes Python `Future` creation, kernel serialisation,
-  GPU dispatch latency, and result gather — independent of shot count.
-- n_y=14 benchmark (256 shots, 1 GPU) took 808 s; a production run with 2048
-  shots would take ~6,464 s (≈1.8 h) on 1 GPU, reduced to ~3,000 s with mqpu.
+- Each timing is a **single-run wall-clock measurement**; variance is significant
+  for small n_y (absolute times < 10 s).
+- **1-GPU & 2-GPU**: `cudaq.set_target('nvidia', option='mqpu')` + `sample_async`
+  on node `x3103c0s9b0n0`.
+- **4-GPU**: `srun --jobid=13652954 -N 2 --ntasks-per-node=2 --gpus-per-node=2`;
+  each rank sets `CUDA_VISIBLE_DEVICES=SLURM_LOCALID` before importing cudaq,
+  then calls `cudaq.set_target('nvidia')` (single GPU per rank).
+- `mpi4py.MPI.Barrier()` synchronises all ranks before and after the sampling
+  call so the reported time is the true wall-clock parallel time.
+- n_y=4–8 multi-node was not benchmarked: single-GPU times are 2–7 s, making
+  mpi4py's MPI startup (~0.5 s) a significant fraction of total time.

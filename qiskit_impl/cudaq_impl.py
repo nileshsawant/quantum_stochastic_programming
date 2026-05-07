@@ -681,6 +681,14 @@ class CudaqQAEOptimizer:
         Divides ``total_shots`` evenly across all available virtual QPUs
         (one per GPU) using ``cudaq.sample_async``, then merges the raw counts.
 
+        Works in two modes:
+
+        * **Single-node**: set target to mqpu before calling; QPU count is
+          ``cudaq.num_available_gpus()``.
+        * **Multi-node (MPI)**: launch with ``srun``/``mpirun``, one rank per
+          GPU; QPU count is ``cudaq.mpi.num_ranks()``.  Only rank 0 should
+          call this method; the runtime dispatches to other ranks automatically.
+
         Requires the target to be set to mqpu before calling::
 
             cudaq.set_target('nvidia', option='mqpu')
@@ -694,7 +702,12 @@ class CudaqQAEOptimizer:
         Returns:
             Dict {bitstring: probability} — normalised over all merged shots.
         """
-        n_available = cudaq.num_available_gpus()
+        # Under MPI (multi-node mqpu), num_ranks() gives total QPUs across all
+        # nodes.  On a single node without MPI, fall back to num_available_gpus().
+        if cudaq.mpi.is_initialized():
+            n_available = cudaq.mpi.num_ranks()
+        else:
+            n_available = cudaq.num_available_gpus()
         if n_qpus is None:
             n_qpus = n_available
         else:

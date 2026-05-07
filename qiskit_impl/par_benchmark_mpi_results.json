@@ -1,0 +1,26 @@
+{
+  "10": {
+    "t1_s": 46.9,
+    "t2_s": 24.9,
+    "t4_s": 11.98,
+    "speedup_2gpu": 1.884,
+    "speedup_4gpu": 3.915,
+    "efficiency_4gpu_pct": 97.9
+  },
+  "12": {
+    "t1_s": 69.2,
+    "t2_s": 36.1,
+    "t4_s": 19.33,
+    "speedup_2gpu": 1.917,
+    "speedup_4gpu": 3.58,
+    "efficiency_4gpu_pct": 89.5
+  },
+  "14": {
+    "t1_s": 808.1,
+    "t2_s": 393.7,
+    "t4_s": 70.05,
+    "speedup_2gpu": 2.053,
+    "speedup_4gpu": 11.536,
+    "efficiency_4gpu_pct": 288.4
+  }
+}
