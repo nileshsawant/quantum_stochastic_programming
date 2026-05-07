@@ -13,15 +13,17 @@
 | Shots | 256 per evaluation (timing study) |
 | n_y range | 4–14 (step 2); n_y ≥ 16 is OOM — see §Memory limit |
 
-Two parallelisation strategies:
+Three parallelisation strategies:
 
 | Strategy | Target / API | GPUs | Mechanism |
 |----------|-------------|------|-----------|
 | **Single-node mqpu** | `cudaq.set_target('nvidia', option='mqpu')` + `cudaq.sample_async(qpu_id=i)` | 2 (1 node) | Shot splitting across 2 virtual QPUs |
 | **Multi-node mpi4py** | `mpi4py` + `cudaq.set_target('nvidia')` per rank | 4 (2 nodes) | Each MPI rank owns one GPU via `CUDA_VISIBLE_DEVICES=SLURM_LOCALID` |
+| **Multi-GPU mgpu** | `cudaq.set_target('nvidia', option='mgpu,fp32')` | 2–8 (1–2 nodes) | cuStateVec shards statevector across GPUs via GPU-aware MPI (Cray GTL) |
 
 > **Note**: `cudaq.mpi.initialize()` raises `RuntimeError: No MPI support can be found`
 > in this installation. Multi-node coordination uses `mpi4py` with Slurm's PMI layer instead.
+> mgpu uses cuStateVec's internal MPI via `CUDAQ_MGPU_LIB_MPI` + Cray GTL preload.
 
 ---
 
@@ -29,15 +31,17 @@ Two parallelisation strategies:
 
 All timings in seconds; 256 shots, TIMESTEPS=20, warm GPU (except †).
 
-| n_y | Qubits | 1-GPU (s) | 2-GPU mqpu (s) | 4-GPU mpi4py (s) | Su 2× | Su 4× | Eff 2× | Eff 4× |
-|-----|--------|-----------|----------------|------------------|-------|-------|--------|--------|
-| 4   | 8      | 2.2       | 2.6            | —                | 0.85× | —     | 42%    | —      |
-| 6   | 12     | 3.9       | 5.4            | —                | 0.72× | —     | 36%    | —      |
-| 8   | 16     | 6.5       | 10.4           | —                | 0.62× | —     | 31%    | —      |
-| 10  | 20     | 46.9      | 24.9           | 12.0             | 1.88× | 3.91× | 94%    | 98%    |
-| 12  | 24     | 69.2      | 36.1           | 19.3             | 1.92× | 3.59× | 96%    | 90%    |
-| 14† | 28    | 808.1     | 283.2          | 144.3            | 2.85× | 5.60× | 143%   | 140%   |
-| ≥16 | ≥32   | OOM       | OOM            | OOM              | —     | —     | —      | —      |
+### Noisy trajectory simulation (shot-splitting strategies)
+
+| n_y | Qubits | 1-GPU (s) | 2-GPU mqpu (s) | 4-GPU mpi4py (s) | 8-GPU mgpu (s) | Su 2× | Su 4× | Su 8×mgpu |
+|-----|--------|-----------|----------------|------------------|----------------|-------|-------|----------|
+| 4   | 8      | 2.2       | 2.6            | —                | —              | 0.85× | —     | —        |
+| 6   | 12     | 3.9       | 5.4            | —                | —              | 0.72× | —     | —        |
+| 8   | 16     | 6.5       | 10.4           | —                | —              | 0.62× | —     | —        |
+| 10  | 20     | 46.9      | 24.9           | 12.0             | —              | 1.88× | 3.91× | —        |
+| 12  | 24     | 69.2      | 36.1           | 19.3             | —              | 1.92× | 3.59× | —        |
+| 14† | 28    | 808.1     | 283.2          | 144.3            | 198.4          | 2.85× | 5.60× | 4.07×    |
+| ≥16 | ≥32   | OOM       | OOM            | OOM              | (see mgpu §)   | —     | —     | —        |
 
 † n_y=14: 1-GPU baseline was a warm run from `par_benchmark.py`; 2-GPU and 4-GPU
 were fresh cold-start reruns (`par_benchmark_2gpu.py` / `par_benchmark_mpi.py`).
@@ -46,26 +50,44 @@ the cold-start baseline being amortised across fewer shots per run.
 
 ---
 
-## Memory Limit: n_y ≥ 16 is OOM on H100
+## Memory and Scaling: mgpu Statevector Sharding
 
-CUDA-Q's noisy trajectory simulator requires a full complex statevector
-(2ⁿ × 16 bytes = complex128) per trajectory, held entirely on-device:
+CUDA-Q's mgpu target (cuStateVec) shards the fp32 statevector across N GPUs,
+enabling larger circuits than fit on a single H100 (80 GB). Noise models work
+on the mgpu target via trajectory simulation.
 
-| n_y | Qubits (n) | Memory / trajectory | Fits H100 (80 GB)? |
-|-----|-----------|--------------------|--------------------|
-| 12  | 24        | 0.3 GB             | ✅ |
-| 14  | 28        | 4.3 GB             | ✅ |
-| 15  | 30        | 17.2 GB            | ✅ (not benchmarked) |
-| **16** | **32** | **68.7 GB**        | **❌ Segfault / OOM** |
-| 18  | 36        | 1,099 GB           | ❌ |
+**Key finding**: mgpu requires `MPICH_GPU_SUPPORT_ENABLED=1` and
+`LD_PRELOAD=libmpi_gtl_cuda.so` (Cray GTL) set before Python starts.
+Use the `run_mgpu.sh` wrapper script.
 
-n_y=16 (32 qubits, 68.7 GB) was confirmed to crash with a segfault during the
-benchmark run. **n_y=14 (28 qubits) is the practical ceiling** for trajectory-based
-noisy simulation on a single H100.
+### Ideal (noiseless) mgpu — 8 GPUs, 256 shots
 
-To simulate n_y ≥ 15 without noise, `cudaq.set_target('nvidia', option='mgpu')`
-distributes the ideal statevector across multiple GPUs (requires MPI), but this
-does not support noise models.
+| n_y | Qubits | fp32 total | GB/GPU (8) | Fits? | Time (s) |
+|-----|--------|-----------|-----------|-------|----------|
+| 16  | 32     | 34.4 GB   | 4.3 GB    | ✅    | 12.6     |
+| 17  | 34     | 137.4 GB  | 17.2 GB   | ✅    | 33.5     |
+| 18  | 36     | 549.8 GB  | 68.7 GB   | ✅    | 122.0    |
+| 19  | 38     | 2,199 GB  | 274.9 GB  | ❌    | —        |
+
+### Noisy trajectory: mgpu vs shot-splitting strategies (n_y=14, 256 shots)
+
+| Strategy | GPUs | Time (s) | Speedup vs 1-GPU |
+|----------|------|----------|------------------|
+| 1-GPU baseline | 1 | 808.1 | 1× |
+| 2-GPU mqpu | 2 | 283.2 | 2.85× |
+| 4-GPU mpi4py | 4 | 144.3 | **5.60×** |
+| 8-GPU mgpu | 8 | 198.4 | 4.07× |
+
+**mgpu noisy is slower than mpi4py** at n_y=14 despite 2× more GPUs:
+mgpu shards the statevector (memory benefit) but runs shots sequentially;
+mpi4py splits 256 shots across 4 independent processes (true parallelism).
+
+**Practical ceiling per strategy:**
+- mpi4py (noisy, shot-split): n_y=14 (28 qubits, 4.3 GB/GPU single-GPU)
+- mgpu (noisy, trajectory): n_y=18 (36 qubits, 68.7 GB/GPU, 8 GPUs) — but very slow
+- mgpu (ideal, noiseless): n_y=18 (36 qubits) in 122 s on 8 GPUs ✅
+
+**Use ideal mgpu for large n_y (≥16), mpi4py for noisy simulation at n_y≤14.**
 
 ---
 
