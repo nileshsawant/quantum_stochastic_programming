@@ -151,8 +151,10 @@ Two panels:
    mpi4py (shot-split, 4 GPUs) is fastest at 144.3 s (5.60×); mgpu (8 GPUs,
    statevector-sharding) reaches 198.4 s (4.07×) — slower because shots run
    sequentially rather than in parallel.
-2. **n_y=16 (32 qubits)**: single-GPU strategies are OOM (68.7 GB/trajectory);
-   8-GPU mgpu is the only viable approach, completing in 12.6 s (noiseless).
+2. **n_y=16 (32 qubits)**: single-GPU strategies are OOM (68.7 GB/trajectory).
+   8-GPU mgpu noiseless completes in 12.6 s. 8-GPU mgpu noisy fits in memory
+   (4.3 GB/GPU) but each `sample_ansatz` call takes >1764 s (cancelled) —
+   trajectory simulation runs shots sequentially, not in parallel.
 
 ---
 

@@ -171,43 +171,45 @@ ax.annotate('mpi4py (shot-split)\nfastest: 144.3 s\n5.60× speedup',
 ax = axes2[1]
 
 strategies_16 = [
-    ('1-GPU\nbaseline',       None, 'OOM\n(68.7 GB/traj)'),
-    ('2-GPU\nmqpu',           None, 'OOM'),
-    ('4-GPU\nmpi4py',         None, 'OOM'),
-    ('8-GPU\nmgpu\n(ideal)',  12.6, None),
+    ('1-GPU\nbaseline',              None,   'OOM\n(68.7 GB/traj)'),
+    ('2-GPU\nmqpu',                  None,   'OOM'),
+    ('4-GPU\nmpi4py',                None,   'OOM'),
+    ('8-GPU mgpu\n(noiseless)',       12.6,   None),
+    ('8-GPU mgpu\n(noisy, cancelled)', None,  '>1764 s\ncancelled'),
 ]
 xs16 = np.arange(len(strategies_16))
-colors16 = ['steelblue', 'tomato', 'seagreen', 'darkorchid']
+colors16 = ['steelblue', 'tomato', 'seagreen', 'darkorchid', 'darkorchid']
 
 for i, (lbl, t, oom) in enumerate(strategies_16):
     if t is not None:
         b = ax.bar(i, t, color=colors16[i], alpha=0.85, width=0.55, zorder=3)
         ax.text(i, t + 0.4, f'{t:.1f} s', ha='center', va='bottom', fontsize=10, fontweight='bold')
     else:
-        # Draw a hatched "OOM" bar for visual clarity
-        ax.bar(i, 15, color=colors16[i], alpha=0.25, width=0.55, hatch='//', zorder=3)
-        ax.text(i, 16, oom, ha='center', va='bottom', fontsize=9,
+        # Draw a hatched bar for visual clarity
+        hatch = 'xx' if '>1764' in (oom or '') else '//'
+        ax.bar(i, 15, color=colors16[i], alpha=0.25, width=0.55, hatch=hatch, zorder=3)
+        ax.text(i, 16, oom, ha='center', va='bottom', fontsize=8.5,
                 color='red', style='italic', fontweight='bold')
 
 ax.set_xticks(xs16)
-ax.set_xticklabels([s[0] for s in strategies_16], fontsize=10)
+ax.set_xticklabels([s[0] for s in strategies_16], fontsize=9)
 ax.set_ylabel('Wall time (s)', fontsize=11)
-ax.set_title('$n_y = 16$  (32 qubits)  — noiseless only\n'
-             '256 shots  |  noisy = OOM on single H100\n'
-             '(68.7 GB/traj > 80 GB)', fontsize=10)
+ax.set_title('$n_y = 16$  (32 qubits)  — 256 shots\n'
+             'noisy fits memory (4.3 GB/GPU) but ~1764 s/call\n'
+             'single-GPU strategies OOM (68.7 GB/traj)', fontsize=9.5)
 ax.set_ylim(0, 50)
 ax.grid(True, axis='y', alpha=0.4, zorder=0)
 
 fig2.suptitle(
-    'Strategy comparison: noisy n_y=14 vs mgpu n_y=16  |  '
-    '256 shots  |  H100 80 GB (Kestrel)',
+    'Strategy comparison: noisy n_y=14 vs n_y=16  |  '
+    '256 shots  |  H100 80 GB (Kestrel)  |  '
+    'n_y=16 noisy fits on 8-GPU mgpu but >1764 s',
     fontsize=10, y=1.01)
 
 plt.tight_layout()
 out2 = os.path.join(SCRATCH_IMPL, 'parallelisation_mgpu_comparison.png')
 plt.savefig(out2, dpi=150, bbox_inches='tight')
 print(f'Plot saved -> {out2}')
-
 # Summary table
 print(f"\n{'n_y':>4}  {'qubits':>6}  {'1-GPU(s)':>9}  {'2-GPU(s)':>9}  "
       f"{'4-GPU(s)':>9}  {'Su_2x':>7}  {'Su_4x':>7}  {'Eff_2x':>7}  {'Eff_4x':>7}")
