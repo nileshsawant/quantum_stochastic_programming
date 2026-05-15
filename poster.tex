@@ -332,38 +332,19 @@ Noisy mgpu fits memory (4.3\,GB/GPU) but $>\!1764$\,s (cancelled).
     top=10pt, bottom=10pt, left=6pt, right=6pt,
     before skip=0pt, after skip=0pt,
 ]
-\begin{columns}[T,totalwidth=\linewidth]
-  \begin{column}{0.70\linewidth}
-    {\color{white}\small\raggedright\sloppy
-      \textbf{[1]}\;
-      C.\,Rotello, P.\,Graf, M.\,Reynolds, E.\,B.\,Jones,
-      C.\,J.\,Winkleblack, W.\,Jones.
-      \textit{Calculating the expected value function of a two-stage stochastic
-      optimization program with a quantum algorithm.}
-      arXiv:2402.15029 [quant-ph], 2024.\;
-      doi:10.48550/arXiv.2402.15029
-
-      \vspace{0.2cm}
-      \textbf{GPU implementation \& parallelisation benchmarks:}\;
-      N.\,Sawant, NREL Kestrel HPC.\;
-      CUDA-Q\,0.14.0\,/\,cuQuantum\,26.3.0\,/\,NVIDIA H100 SXM5 80\,GB.
-
-      \vspace{0.2cm}
-      \textbf{Code:}\;
-      github.com/NatLabRockies/quantum\_stochastic\_programming
-      \;(branch \texttt{fix/cuda-q-script})
-    }
-  \end{column}
-  \begin{column}{0.28\linewidth}
-    {\color{white!80!black}\small\raggedright
-      \texttt{module load qiskit/aer-gpu}\\[3pt]
-      NREL Kestrel \textemdash{} \texttt{qiskit/aer-gpu}\\
-      CUDA-Q\,0.14.0\;/\;cuQuantum\,26.3.0\\
-      Qiskit\,2.2.3\;/\;mpi4py\,4.1.1\\
-      Cray MPICH\,8.1.28\;+\;GTL
-    }
-  \end{column}
-\end{columns}
+{\color{white}\small\raggedright\sloppy
+  \textbf{[1]}\;
+  C.\,Rotello, P.\,Graf, M.\,Reynolds, E.\,B.\,Jones,
+  C.\,J.\,Winkleblack, W.\,Jones.
+  \textit{Calculating the expected value function of a two-stage stochastic
+  optimization program with a quantum algorithm.}
+  arXiv:2402.15029 [quant-ph], 2024.\;
+  doi:10.48550/arXiv.2402.15029
+  \hfill
+  \textbf{Code:}\;
+  github.com/NatLabRockies/quantum\_stochastic\_programming
+  \;(branch \texttt{fix/cuda-q-script})
+}
 \end{tcolorbox}
 
 \end{frame}
