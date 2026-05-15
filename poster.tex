@@ -84,23 +84,22 @@
 % ==============================================================================
 % HEADER
 % ==============================================================================
-\begin{tikzpicture}[remember picture, overlay]
-  \fill[titleblue]
-    ([xshift=-3cm,yshift=0.8cm]current page.north west)
-    rectangle
-    ([xshift=3cm,yshift=-7.4cm]current page.north east);
-\end{tikzpicture}
-
-\vspace{-0.3cm}
+\begin{tcolorbox}[
+    enhanced, arc=0pt, boxrule=0pt,
+    colback=titleblue, colframe=titleblue,
+    top=14pt, bottom=14pt, left=6pt, right=6pt,
+    before skip=0pt, after skip=16pt,
+]
 \begin{center}
   {\color{white}\Huge\bfseries
-    GPU-Accelerated Quantum Algorithms for\\[0.3em]
-    Two-Stage Stochastic Optimisation}\\[0.7cm]
-  {\color{white!90!gray}\large
+    Calculating the Expected Value Function of a\\[0.3em]
+    Two-Stage Stochastic Optimization Program\\[0.2em]
+    with a Quantum Algorithm}\\[0.65cm]
+  {\color{white!85!black}\large
     C.~Rotello \quad P.~Graf \quad M.~Reynolds \quad E.\,B.~Jones
-    \quad C.\,J.~Winkleblack \quad W.~Jones \quad N.~Sawant}\\[0.3cm]
-  {\color{white!80!gray}\normalsize
-    National Renewable Energy Laboratory (NREL) \textemdash{} NatLabRockies}\\[0.4cm]
+    \quad C.\,J.~Winkleblack \quad W.~Jones}\\[0.3cm]
+  {\color{white!70!black}\normalsize
+    National Renewable Energy Laboratory (NREL) \textemdash{} NatLabRockies}\\[0.45cm]
   \begin{tikzpicture}
     \node[fill=white!20!titleblue, rounded corners=4pt,
           inner xsep=12pt, inner ysep=5pt]
@@ -110,7 +109,7 @@
         \textbf{Code:}\;\texttt{\color{yellow!80!white}github.com/NatLabRockies/quantum\_stochastic\_programming}};
   \end{tikzpicture}
 \end{center}
-\vspace{0.55cm}
+\end{tcolorbox}
 
 % ==============================================================================
 % BODY -- two equal columns
@@ -326,17 +325,15 @@ Noisy mgpu fits memory (4.3\,GB/GPU) but $>\!1764$\,s (cancelled).
 % ==============================================================================
 % FOOTER
 % ==============================================================================
-\vspace{0.5cm}
-\begin{tikzpicture}[remember picture, overlay]
-  \fill[titleblue]
-    ([xshift=-3cm,yshift=0.5cm]current page.south west)
-    rectangle
-    ([xshift=3cm,yshift=3.8cm]current page.south east);
-\end{tikzpicture}
-
+\vspace{0.4cm}
+\begin{tcolorbox}[
+    enhanced, arc=0pt, boxrule=0pt,
+    colback=titleblue, colframe=titleblue,
+    top=10pt, bottom=10pt, left=6pt, right=6pt,
+    before skip=0pt, after skip=0pt,
+]
 \begin{columns}[T,totalwidth=\linewidth]
   \begin{column}{0.70\linewidth}
-    \vspace{0.15cm}
     {\color{white}\small\raggedright\sloppy
       \textbf{[1]}\;
       C.\,Rotello, P.\,Graf, M.\,Reynolds, E.\,B.\,Jones,
@@ -358,8 +355,7 @@ Noisy mgpu fits memory (4.3\,GB/GPU) but $>\!1764$\,s (cancelled).
     }
   \end{column}
   \begin{column}{0.28\linewidth}
-    \vspace{0.15cm}
-    {\color{white!70!titleblue}\small\raggedright
+    {\color{white!80!black}\small\raggedright
       \texttt{module load qiskit/aer-gpu}\\[3pt]
       NREL Kestrel \textemdash{} \texttt{qiskit/aer-gpu}\\
       CUDA-Q\,0.14.0\;/\;cuQuantum\,26.3.0\\
@@ -368,6 +364,7 @@ Noisy mgpu fits memory (4.3\,GB/GPU) but $>\!1764$\,s (cancelled).
     }
   \end{column}
 \end{columns}
+\end{tcolorbox}
 
 \end{frame}
 \end{document}
