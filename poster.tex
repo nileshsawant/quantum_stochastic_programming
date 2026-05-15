@@ -44,7 +44,7 @@
       colbacktitle=accentblue, coltitle=white,
       fonttitle=\bfseries\large, title={#1},
       top=6pt, bottom=6pt, left=9pt, right=9pt,
-      before skip=10pt, after skip=0pt,
+      before skip=5pt, after skip=0pt,
   ]#2\end{tcolorbox}}
 
 \newcommand{\implblock}[2]{%
@@ -54,7 +54,7 @@
       colbacktitle=nrelgreen, coltitle=white,
       fonttitle=\bfseries\large, title={#1},
       top=6pt, bottom=6pt, left=9pt, right=9pt,
-      before skip=10pt, after skip=0pt,
+      before skip=5pt, after skip=0pt,
   ]#2\end{tcolorbox}}
 
 \newcommand{\keyblock}[2]{%
@@ -64,7 +64,7 @@
       colbacktitle=warnorange, coltitle=white,
       fonttitle=\bfseries\large, title={#1},
       top=6pt, bottom=6pt, left=9pt, right=9pt,
-      before skip=10pt, after skip=0pt,
+      before skip=5pt, after skip=0pt,
   ]#2\end{tcolorbox}}
 
 % ---- bibliography (manual) ---------------------------------------------------
@@ -258,7 +258,7 @@ NREL Kestrel H100s (80\,GB each).
 }
 }
 
-\vspace{0.15cm}
+\vspace{0.08cm}
 
 % ------------------------------------------------------------------------------
 \implblock{5 \quad Noisy Benchmark: mqpu vs mpi4py (Kestrel H100s)}{
@@ -268,7 +268,7 @@ $T\!=\!20$ DQA steps.
 
 \vspace{0.2cm}
 \begin{center}
-  \includegraphics[width=\linewidth]{qiskit_impl/parallelisation_study.png}
+  \includegraphics[width=\linewidth, height=8cm, keepaspectratio]{qiskit_impl/parallelisation_study.png}
 \end{center}
 
 \vspace{0.1cm}
@@ -281,13 +281,13 @@ $3.6\times$--$5.6\times$.\\
 }
 }
 
-\vspace{0.15cm}
+\vspace{0.08cm}
 
 % ------------------------------------------------------------------------------
 \implblock{6 \quad Strategy Comparison at Scale}{
 
 \begin{center}
-  \includegraphics[width=\linewidth]{qiskit_impl/parallelisation_mgpu_comparison.png}
+  \includegraphics[width=\linewidth, height=10cm, keepaspectratio]{qiskit_impl/parallelisation_mgpu_comparison.png}
 \end{center}
 
 \vspace{0.1cm}
@@ -300,11 +300,12 @@ Noisy mgpu fits memory (4.3\,GB/GPU) but $>\!1764$\,s (cancelled).
 }
 }
 
-\vspace{0.15cm}
+\vspace{0.08cm}
 
 % ------------------------------------------------------------------------------
 \keyblock{Key Theoretical Findings}{
-\setlength{\itemsep}{6pt}
+\small
+\setlength{\itemsep}{2pt}
 \begin{itemize}
   \item \textbf{Polynomial speedup:} QAE estimates $\phi(x)$ with error
     $O(1/\varepsilon)$ circuit calls vs $O(1/\varepsilon^2)$ for classical Monte
